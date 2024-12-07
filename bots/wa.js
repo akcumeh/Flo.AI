@@ -11,7 +11,7 @@ import {
     getUser,
     askClaude,
     walkThru
-} from './utils.js';
+} from '../utils.js';
 import { updateUser } from '../utils.js';
 
 const router = express.Router();

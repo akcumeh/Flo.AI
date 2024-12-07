@@ -14,7 +14,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/wa', wa);
 app.use('/tg', tg.router);
 
-const WEBHOOK_URL = process.env.WEBHOOK_URL || `http://localhost:${PORT}`;
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 if (WEBHOOK_URL) {
     try {
         await tg.bot.telegram.setWebhook(`${WEBHOOK_URL}/tg`);

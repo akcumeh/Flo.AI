@@ -70,25 +70,23 @@ export function tokenRefresh(user) {
 // Conversation Management
 export async function askClaude(user, prompt) {
     const convo = user.convoHistory;
-    if (convo.length === 0) {
-        convo.push(
-            { role: "user", content: prompt },
-        );
-    };
+    convo.push(
+        { role: "user", content: prompt },
+    );
     const claude = await anthropic.messages.create({
         model: "claude-3-5-sonnet-latest",
-        max_tokens: 1024,
-        system: "You are Florence*, a highly knowledgeable teacher on every subject. You are patiently guiding a student through a difficult concept using clear, detailed yet concise answers.",
+        max_tokens: 512,
+        system: "You are Florence*, a highly knowledgeable teacher on every subject. Answer questions clearly.",
         messages: convo,
     });
 
-    let claudeAnswer = claude.content[0].text;
     convo.push(
-        { role: "assistant", content: claudeAnswer }
+        { role: "assistant", content: claude.content[0].text }
     );
+    console.log(convo);
     updateUser(user.id, { convoHistory: convo });
 
-    return claudeAnswer;
+    return claude.content[0].text;
 };
 
 export async function askClaudeWithMedia(user, prompt, caption) {

@@ -11,10 +11,11 @@ import {
     addUser,
     getUser,
     askClaude,
-    walkThru
-} from './utils.js';
+    walkThru,
+    updateUser
+} from '../utils.js';
 
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+const bot = new Telegraf(process.env.BOT_TOKEN);
 const prefix = 'tg:';
 
 bot.command('start', ctx => {
@@ -25,9 +26,11 @@ bot.command('start', ctx => {
             name: ctx.from.first_name,
             tokens: 25
         });
+        user = getUser(prefix + ctx.from.id);
         ctx.reply(walkThru(user.tokens));
     };
     
+    updateUser(user.id, { convoHistory: [] });
     return ctx.reply(`Hello ${ctx.from.first_name}, welcome to Florence*! What do you need help with today?\n\nYou have ${user.tokens} tokens.`);
 });
 
@@ -53,6 +56,7 @@ bot.on('message', async (ctx) => {
             name: ctx.from.first_name,
             tokens: 25
         });
+        user = getUser(prefix + ctx.from.id);
         ctx.reply(walkThru(user.tokens));
     };
     if (user.tokens < 1) {
@@ -64,12 +68,12 @@ bot.on('message', async (ctx) => {
         const claudeAnswer = await askClaude(user, ctx.message.text);
         if (claudeAnswer) ctx.reply(claudeAnswer);
         
-        user.tokens -= 1;
+        updateUser(user.id, { tokens: user.tokens - 1 });
     } catch (error) {
         console.error('Error processing message:', error);
 
         ctx.reply('Sorry, there was an error processing your request. Please try again.');
-        user.tokens += 1;
+        updateUser(user.id, { tokens: user.tokens + 1 });
     };
 });
 
