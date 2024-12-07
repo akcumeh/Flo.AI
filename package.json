@@ -1,0 +1,22 @@
+{
+  "name": "flo.ai",
+  "version": "1.0.0",
+  "description": "The educational assistant.",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node main.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "body-parser": "^1.20.3",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "node-fetch": "^3.3.2",
+    "telegraf": "^4.16.3",
+    "twilio": "^5.3.7"
+  }
+}

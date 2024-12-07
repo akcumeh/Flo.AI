@@ -1,2 +1,2 @@
 # Flo.AI
- The educational assistant
+ The educational assistant.
