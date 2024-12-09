@@ -77,8 +77,18 @@ bot.on('message', async (ctx) => {
     };
 });
 
-router.post('/', async (req, res) => {
-    bot.handleUpdate(req.body, res);
-});
+export default async function handler(req, res) {
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    };
+
+    try {
+        await bot.handleUpdate(req.body, res);
+        res.status(200).end();
+    } catch (error) {
+        console.error('Error handling telegram update:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    };
+};
 
 export const tg = { router, bot };

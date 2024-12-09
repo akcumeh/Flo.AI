@@ -33,8 +33,10 @@ async function sendMsg(content, id) {
     }
 };
 
-router.post('/', async (req, res) => {
-    const { WaId, MessageType, ProfileName, Body, MediaUrl0, MediaContentType0 } = req.body;
+export default async function handler(req, res) {
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    };
 
     try {
         let user = getUser(prefix+WaId);
@@ -114,6 +116,6 @@ router.post('/', async (req, res) => {
         updateUser(user.id, { tokens: user.tokens + 1 });
         res.status(500).send('Error?')
     }
-});
+};
 
 export const wa = router;

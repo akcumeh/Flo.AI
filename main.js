@@ -1,7 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
-import { wa } from './bots/wa.js';
-import { tg } from './bots/tg.js';
+import { wa } from './api/wa.js';
+import { tg } from './api/tg.js';
 
 dotenv.config();
 
