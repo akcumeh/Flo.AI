@@ -1,5 +1,5 @@
-import { User } from './models/User.js';
-import { connectDB } from './utils/db.js';
+import { User } from './models/user.js';
+import { connectDB } from './db.js';
 import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 
@@ -8,9 +8,6 @@ dotenv.config();
 export const anthropic = new Anthropic({
     apiKey: process.env.CLAUDE_API_KEY
 });
-
-
-var users = new Map();
 
 
 // User Management
