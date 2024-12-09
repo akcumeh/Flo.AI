@@ -25,8 +25,8 @@ async function sendMsg(content, id) {
     try {
         return await client.messages.create({
             body: content,
-            from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-            to: `whatsapp:${id}` // cpme back to this to strip it of wa prefix if attached
+            from: `whatsapp:+${process.env.TWILIO_PHONE_NUMBER}`,
+            to: `whatsapp:+${id.substring(3)}` // remove 'wa:'
         });
     } catch (error) {
         console.error('Error sending WA message', error);
