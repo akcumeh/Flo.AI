@@ -1,4 +1,4 @@
-import { User } from './models/user.js';
+import { User } from '../models/user.js';
 import { connectDB } from './db.js';
 import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
