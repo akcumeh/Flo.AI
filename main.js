@@ -17,8 +17,8 @@ app.use('/tg', tg.router);
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 if (WEBHOOK_URL) {
     try {
-        await tg.bot.telegram.setWebhook(`${WEBHOOK_URL}/tg`);
-        console.log('TG Bot webhook set to ', `${WEBHOOK_URL}/tg`);
+        await tg.bot.telegram.setWebhook(`${WEBHOOK_URL}/api/tg`);
+        console.log('TG Bot webhook set to ', `${WEBHOOK_URL}/api/tg`);
     } catch (error) {
         console.error('Error setting TG Bot webhook', error);
     }
