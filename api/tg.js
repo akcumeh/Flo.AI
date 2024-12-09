@@ -13,7 +13,7 @@ import {
     askClaude,
     walkThru,
     updateUser
-} from '../utils.js';
+} from '../utils/utils.js';
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const prefix = 'tg:';

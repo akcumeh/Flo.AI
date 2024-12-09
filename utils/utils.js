@@ -1,3 +1,5 @@
+import { User } from './models/User.js';
+import { connectDB } from './utils/db.js';
 import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
 
@@ -12,56 +14,58 @@ var users = new Map();
 
 
 // User Management
-export function addUser({ id, name, tokens=25 }) {
+export async function addUser({ id, name, tokens = 25 }) {
+    await connectDB();
+
     const userData = {
-        id,
+        userId: id,
         name,
         tokens,
         streak: 0,
         convoHistory: [],
-        lastTokenReward: new Date().toISOString(),
+        lastTokenReward: new Date()
     };
 
-    users.set(id, userData);
-
-    return userData;
+    const user = await User.create(userData);
+    return user;
 };
 
-export function getUser(id) {
-    return users.get(id);
+export async function getUser(id) {
+    await connectDB();
+    return await User.findOne({ userId: id });
 };
 
-export function updateUser(id, updates){
-    const user = getUser(id);
-
-    if (user) {
-        users.set(id, { ...user, ...updates });
-        return getUser(id);
-    };
-
-    return null;
+export async function updateUser(id, updates) {
+    await connectDB();
+    return await User.findOneAndUpdate(
+        { userId: id },
+        { $set: updates },
+        { new: true }
+    );
 };
-
 
 // Token Management
-export function addTokens({ id, amt }) {
-    const user = users.get(id);
-    user.tokens += amt;
+export async function addTokens({ id, amt }) {
+    await connectDB();
+    const user = await User.findOne({ userId: id });
+    if (!user) return null;
 
+    user.tokens += amt;
+    await user.save();
     return user.tokens;
 };
 
-export function tokenRefresh(user) {
+export async function tokenRefresh(user) {
     const now = new Date();
     const lastTokenReward = new Date(user.lastTokenReward);
     const elapsedTime = (now - lastTokenReward) / (1000 * 60 * 60);
 
-    if ((elapsedTime >= 24) && (true /* !paidAnything */) && (user.tokens < 25)) {
-        updateUser(user.id, {
+    if ((elapsedTime >= 24) && (user.tokens < 25)) {
+        return await updateUser(user.userId, {
             tokens: 25,
-            lastTokenReward: now.toISOString(),
+            lastTokenReward: now
         });
-    };
+    }
 
     return user;
 };
@@ -69,24 +73,25 @@ export function tokenRefresh(user) {
 
 // Conversation Management
 export async function askClaude(user, prompt) {
+    await connectDB();
     const convo = user.convoHistory;
-    convo.push(
-        { role: "user", content: prompt },
-    );
+
+    if (convo.length === 0) {
+        convo.push({ role: "user", content: prompt });
+    }
+
     const claude = await anthropic.messages.create({
         model: "claude-3-5-sonnet-latest",
-        max_tokens: 512,
-        system: "You are Florence*, a highly knowledgeable teacher on every subject. Answer questions clearly.",
+        max_tokens: 1024,
+        system: "You are Florence*, a highly knowledgeable teacher on every subject. You are patiently guiding a student through a difficult concept using clear, detailed yet concise answers.",
         messages: convo,
     });
 
-    convo.push(
-        { role: "assistant", content: claude.content[0].text }
-    );
-    console.log(convo);
-    updateUser(user.id, { convoHistory: convo });
+    let claudeAnswer = claude.content[0].text;
+    convo.push({ role: "assistant", content: claudeAnswer });
 
-    return claude.content[0].text;
+    await updateUser(user.userId, { convoHistory: convo });
+    return claudeAnswer;
 };
 
 export async function askClaudeWithMedia(user, prompt, caption) {
