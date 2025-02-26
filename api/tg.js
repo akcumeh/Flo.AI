@@ -2,6 +2,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { Telegraf } from 'telegraf';
+import paymentsRouter from './payments.js';
 
 dotenv.config();
 
@@ -35,7 +36,7 @@ bot.command('start', ctx => {
 });
 
 bot.command('about', (ctx) => {
-    ctx.reply('Florence* is the educational assistant at your fingertps. More about Florence*. <link>.');
+    ctx.reply('Florence* is the educational assistant at your fingertips. More about Florence*. <link>.');
 });
 
 bot.command('tokens', (ctx) => {
@@ -45,7 +46,14 @@ bot.command('tokens', (ctx) => {
 
 bot.command('payments', (ctx) => {
     let user = getUser(prefix + ctx.from.id);
-    //payment logic
+    
+    ctx.reply('Tokens cost 1,000 naira for 10.\n\nInitializing payment:');
+
+    ctx.reply('Please enter your e-mail address:');
+    bot.on('message', async (ctx) => {
+        updateUser(user.id, { email: ctx.message.text.trim() });
+        const payment = await paymentsRouter.createPayment(user.id);
+    });
 });
 
 bot.on('message', async (ctx) => {

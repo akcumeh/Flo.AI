@@ -16,6 +16,7 @@
     "body-parser": "^1.20.3",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "flutterwave-node-v3": "^1.1.14",
     "mongoose": "^8.8.4",
     "node-fetch": "^3.3.2",
     "nodemon": "^3.1.9",

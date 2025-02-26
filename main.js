@@ -10,6 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const MONGO_URI = process.env.MONGO_URI;
 
+
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -32,8 +33,13 @@ app.use((err, req, res, next) => {
 });
 
 // Connect to MongoDB and Start Server
-connectDB(MONGO_URI).then(() => {
-    app.listen(PORT, () => {
-        console.log(`Server running on port ${PORT}`);
+connectDB(MONGO_URI)
+    .then(() => {
+        app.listen(PORT, () => {
+            console.log(`Server running on port ${PORT}`);
+        });
+    })
+    .catch (err => {
+        console.error('Failed to connect to MongoDB:', err);
+        process.exit(1);
     });
-});

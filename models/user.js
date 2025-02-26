@@ -10,22 +10,28 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    email: {
+        type: String,
+    },
     tokens: {
         type: Number,
-        default: 25
+        default: 13,
+        required: true
     },
     streak: {
         type: Number,
         default: 0
     },
-    convoHistory: [{
+    convoHistory: [
+        {
         role: String,
         content: String
-    }],
+        },
+    ],
     lastTokenReward: {
         type: Date,
         default: Date.now
-    }
+    },
 });
 
 export const User = mongoose.model('User', userSchema);

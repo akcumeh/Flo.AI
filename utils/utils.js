@@ -1,7 +1,9 @@
 import { User } from '../models/user.js';
 import { connectDB } from '../db/db.js';
+import { Payments } from '../models/payments.js';
 import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
+import Flutterwave from 'flutterwave-node-v3';
 
 dotenv.config();
 
@@ -9,18 +11,22 @@ export const anthropic = new Anthropic({
     apiKey: process.env.CLAUDE_API_KEY
 });
 
+export const flw = new Flutterwave(
+    process.env.FLW_PUBLIC_KEY_TEST,
+    process.env.FLW_SECRET_KEY_TEST,
+);
 
 // User Management
-export async function addUser({ id, name, tokens = 25 }) {
+export async function addUser({ id, name }) {
     await connectDB();
 
     const userData = {
         userId: id,
-        name,
+        name: name,
         tokens,
         streak: 0,
         convoHistory: [],
-        lastTokenReward: new Date()
+        lastTokenReward: new Date(),
     };
 
     const user = await User.create(userData);
@@ -44,6 +50,7 @@ export async function updateUser(id, updates) {
 // Token Management
 export async function addTokens({ id, amt }) {
     await connectDB();
+
     const user = await User.findOne({ userId: id });
     if (!user) return null;
 
@@ -57,12 +64,12 @@ export async function tokenRefresh(user) {
     const lastTokenReward = new Date(user.lastTokenReward);
     const elapsedTime = (now - lastTokenReward) / (1000 * 60 * 60);
 
-    if ((elapsedTime >= 24) && (user.tokens < 25)) {
+    if ((elapsedTime >= 24) && (user.tokens < 10)) {
         return await updateUser(user.userId, {
-            tokens: 25,
+            tokens: 10,
             lastTokenReward: now
         });
-    }
+    };
 
     return user;
 };
@@ -126,6 +133,51 @@ export async function askClaudeWithMedia(user, prompt, caption) {
     return claudeAnswer;
 };
 
+
+// Payments
+export async function payWithBankTrf(user, tokens=10, amt=1000) {
+    await connectDB();
+
+    // Create payment record
+    const payment = await Payments.create({
+        userId: user.userId,
+        name: user.name,
+        tokens: tokens,
+        time: new Date().toLocaleString('en-GB', { timeZone: 'UTC' }).replace(',', ''),
+        payId: `${"FLO" + (new Date()).getTime() + "-" + user.userId}`,
+        userEmail: user.email,
+    });
+
+    // Flutterwave
+    const bank_trf = async () => {
+
+        try {
+
+            const payload = {
+                "tx_ref": payment.payId,
+                "amount": amt,
+                "currency": "NGN",
+                "email": user.email,
+                "phone_number": user.phone,
+                "client_ip": "",
+                "device_fingerprint": "",
+                "narration": "Payment for Florence* tokens",
+                "is_permanent": false,
+                "expires": 3600,
+            };
+
+            const response = await flw.Charge.bank_transfer(payload)
+            console.log(response);
+
+        } catch (error) {
+            console.log(error)
+        }
+
+    }
+
+    bank_trf();
+        
+}
 
 // Helper Functions
 export function mediaType(url, contentType) {
