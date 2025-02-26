@@ -2,7 +2,10 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { Telegraf } from 'telegraf';
-import paymentsRouter from './payments.js';
+import {
+    addUser,
+    
+} from '../';
 
 dotenv.config();
 

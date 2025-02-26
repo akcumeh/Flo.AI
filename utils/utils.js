@@ -3,6 +3,7 @@ import { connectDB } from '../db/db.js';
 import { Payments } from '../models/payments.js';
 import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
+import open from 'open';
 import Flutterwave from 'flutterwave-node-v3';
 
 dotenv.config();
@@ -146,13 +147,13 @@ export async function payWithBankTrf(user, tokens=10, amt=1000) {
         time: new Date().toLocaleString('en-GB', { timeZone: 'UTC' }).replace(',', ''),
         payId: `${"FLO" + (new Date()).getTime() + "-" + user.userId}`,
         userEmail: user.email,
+        paymentMethod: "Bank Transfer",
     });
 
     // Flutterwave
     const bank_trf = async () => {
 
         try {
-
             const payload = {
                 "tx_ref": payment.payId,
                 "amount": amt,
@@ -177,6 +178,75 @@ export async function payWithBankTrf(user, tokens=10, amt=1000) {
 
     bank_trf();
         
+}
+
+export async function payWithCard(user, cardInfo, tokens = 10, amt = 1000, OTP) {
+    await connectDB();
+
+    // Create payment record
+    const payment = await Payments.create({
+        userId: user.userId,
+        name: user.name,
+        tokens: tokens,
+        time: new Date().toLocaleString('en-GB', { timeZone: 'UTC' }).replace(',', ''),
+        payId: `${"FLO" + (new Date()).getTime() + "-" + user.userId}`,
+        userEmail: user.email,
+        paymentMethod: "Card",
+    });
+
+    // Flutterwave
+    const cardCharge = async () => {
+
+        try {
+            const payload = {
+                "tx_ref": payment.payId,
+                "amount": amt,
+                "currency": "NGN",
+                "email": user.email,
+                "phone_number": user.phone,
+                "fullname": user.name,
+
+                "card_number": cardInfo.cardNumber,
+                "cvv": cardInfo.cvv,
+                "expiry_month": cardInfo.expiryYear,
+                "expiry_month": cardInfo.expiryMonth,
+
+                "enckey": process.env.FLW_ENCRYPTION_KEY_TEST,
+
+                "redirect_url": process.env.BOT_TG_URL,
+
+                "narration": "Payment for Florence* tokens",
+                "is_permanent": false,
+                "expires": 3600,
+            };
+
+            const response = await flw.Charge.card(payload);
+            console.log(response);
+
+            if (response.meta.authorization.mode === "pin") {
+                let payload2 = payload;
+                payload2.authorization = {
+                    "mode": "pin",
+                    "fields": [
+                        "pin"
+                    ],
+                    "pin": cardInfo.cardPin
+                };
+                const reCallCharge = await flw.Charge.card(payload2);
+
+                const callValidate = await flw.Charge.validate({
+                    "otp": await OTP,
+                    "flw_ref": reCallCharge.data.flw_ref
+                });
+                console.log(callValidate);
+            };
+        } catch (error) {
+            console.log(error)
+        };
+    };
+
+    cardCharge();
+
 }
 
 // Helper Functions

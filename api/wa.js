@@ -7,12 +7,18 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import {
+    walkThru,
+    
     addUser,
     getUser,
+    updateUser,
+
     askClaude,
-    walkThru
+    
+    payWithBankTrf,
+    payWithCard,
+
 } from '../utils/utils.js';
-import { updateUser } from '../utils/utils.js';
 
 const router = express.Router();
 

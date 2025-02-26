@@ -28,6 +28,10 @@ const paymentsSchema = new mongoose.Schema({
         required: true,
         unique: true,
     },
+    paymentMethod: {
+        type: String,
+        required: true,
+    }
     // what else?
 });
 
