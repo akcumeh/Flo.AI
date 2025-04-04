@@ -180,7 +180,7 @@ export async function payWithBankTrf(user, tokens=10, amt=1000) {
         
 }
 
-export async function payWithCard(user, cardInfo, tokens = 10, amt = 1000, OTP) {
+export async function payWithCard(user, tokens = 10, amt = 1000, ...cardInfo) {
     await connectDB();
 
     // Create payment record

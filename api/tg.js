@@ -1,22 +1,23 @@
-
 import express from 'express';
 import dotenv from 'dotenv';
 import { Telegraf } from 'telegraf';
-import {
-    addUser,
-    
-} from '../';
 
 dotenv.config();
 
 const router = express.Router();
 
 import {
+    walkThru,
+
     addUser,
     getUser,
+    updateUser,
+
     askClaude,
-    walkThru,
-    updateUser
+
+    payWithBankTrf,
+    payWithCard,
+
 } from '../utils/utils.js';
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -55,8 +56,44 @@ bot.command('payments', (ctx) => {
     ctx.reply('Please enter your e-mail address:');
     bot.on('message', async (ctx) => {
         updateUser(user.id, { email: ctx.message.text.trim() });
-        const payment = await paymentsRouter.createPayment(user.id);
     });
+
+    ctx.reply('Choose a payment method:', {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: 'Pay with Card',
+                        callback_data: 'card',
+                    },
+                    {
+                        text: 'Pay with Bank Transfer',
+                        callback_data: 'bank',
+                    },
+                ],
+            ],
+        }
+    });
+    if (ctx.callbackQuery.data === 'card') {
+        const cardInfo = {
+            cardNumber: '',
+            CVV: '',
+            expiryDate: '',
+        }
+        ctx.reply('Please enter your card details. Note that Florence* does not store your card details.');
+        ctx.reply('Enter your card number.');
+        bot.on('message', async (ctx) => {
+            cardInfo.cardNumber = ctx.message.text.trim();
+        });
+        ctx.reply('Enter your CVV.');
+        bot.on('message', async (ctx) => {
+            cardInfo.CVV = ctx.message.text.trim();
+        });
+        ctx.reply('Enter your card expiry date.');
+        bot.on('message', async (ctx) => {
+            cardInfo.expiryDate = ctx.message.text.trim();
+        });
+    }
 });
 
 bot.on('message', async (ctx) => {
