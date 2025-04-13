@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { message } from 'telegraf/filters';
 
 const userSchema = new mongoose.Schema({
     userId: {
@@ -20,14 +21,32 @@ const userSchema = new mongoose.Schema({
     },
     streak: {
         type: Number,
-        default: 0
+        default: 0,
     },
-    convoHistory: [
-        {
-        role: String,
-        content: String
-        },
-    ],
+    convoHistory: {
+        type: Array,
+        default: [
+            {
+                role: String,
+                content: String | Array,
+            }
+        ],
+    },
+    convos: {
+        type: Array,
+        default: [
+            {
+                title: String,
+                messages: [
+                    {
+                        role: String,
+                        content: String | Array,
+                    },
+                ]
+            }
+        ],
+
+    },
     lastTokenReward: {
         type: Date,
         default: Date.now

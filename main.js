@@ -1,8 +1,8 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import connectDB from './db/db.js';
-import { wa } from './api/wa.js';
 import { tg } from './api/tg.js';
+import { wa } from './api/wa.js';
 
 dotenv.config();
 
@@ -10,20 +10,25 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const MONGODB_URI = process.env.MONGODB_URI;
 
-
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Mount API routes
 app.use('/wa', wa);
 app.use('/tg', tg.router);
+
+// Add a simple home route
+app.get('/', (req, res) => {
+    res.send('Florence AI Bot - Server Running');
+});
 
 // Set Telegram Bot Webhook
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 if (WEBHOOK_URL) {
-    tg.bot.telegram.setWebhook(`${WEBHOOK_URL}/api/tg`)
-        .then(() => console.log('TG Bot webhook set to', `${WEBHOOK_URL}/api/tg`))
-        .catch(error => console.error('Error setting TG Bot webhook', error));
+    tg.setupWebhook(WEBHOOK_URL);
+} else {
+    console.warn('WEBHOOK_URL not defined in environment variables. Webhook setup skipped.');
 }
 
 // Global Error Handler
@@ -39,7 +44,7 @@ connectDB(MONGODB_URI)
             console.log(`Server running on port ${PORT}`);
         });
     })
-    .catch (err => {
+    .catch(err => {
         console.error('Failed to connect to MongoDB:', err);
         process.exit(1);
     });
