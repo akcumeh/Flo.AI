@@ -7,6 +7,8 @@ import { connectDB } from '../db/db.js';
 
 dotenv.config();
 
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/claude-bot';
+
 // Initialize Anthropic client
 let anthropic = new Anthropic({
     apiKey: process.env.CLAUDE_API_KEY
@@ -15,7 +17,7 @@ console.log('✅ Claude API initialized successfully');
 
 // User Management
 export async function addUser({ id, name, tokens = 25 }) {
-    await connectDB();
+    await connectDB(MONGODB_URI);
 
     const userData = {
         userId: id,
@@ -33,12 +35,12 @@ export async function addUser({ id, name, tokens = 25 }) {
 }
 
 export async function getUser(id) {
-    await connectDB();
+    await connectDB(MONGODB_URI);
     return await User.findOne({ userId: id });
 }
 
 export async function updateUser(id, updates) {
-    await connectDB();
+    await connectDB(MONGODB_URI);
     return await User.findOneAndUpdate(
         { userId: id },
         { $set: updates },
@@ -46,9 +48,9 @@ export async function updateUser(id, updates) {
     );
 }
 
-// Token Management
+// Token ManagemenT
 export async function addTokens({ id, amt }) {
-    await connectDB();
+    await connectDB(MONGODB_URI);
 
     const user = await User.findOne({ userId: id });
     if (!user) return null;
@@ -60,7 +62,7 @@ export async function addTokens({ id, amt }) {
 }
 
 export async function tokenRefresh(user) {
-    await connectDB();
+    await connectDB(MONGODB_URI);
 
     const now = new Date();
     const lastTokenReward = new Date(user.lastTokenReward);
@@ -218,7 +220,7 @@ export async function convertPDFToBase64(file) {
 
 // Payment processing
 export async function payWithBankTrf(user, tokens = 25, amt = 1000) {
-    await connectDB();
+    await connectDB(MONGODB_URI);
 
     // Create payment record
     const payment = await Payments.create({
@@ -239,7 +241,7 @@ export async function payWithBankTrf(user, tokens = 25, amt = 1000) {
 }
 
 export async function payWithCard(user, tokens = 25, amt = 1000) {
-    await connectDB();
+    await connectDB(MONGODB_URI);
 
     // Create payment record
     const payment = await Payments.create({
@@ -274,6 +276,12 @@ Here are a few helpful commands for a smooth experience:
 /tokens - see how many tokens you have left.
 /payments - Top up your tokens.
 /conversations - View and continue previous conversations.
+/STEM - Answer math & science questions even better. [coming soon]
+/research - Get help with your research/thesis/project. [coming soon]
+/feedback - Send feedback to the developers.
+/verify [reference number] - Verify your payment status.
+
+/help - Get a list of all commands.
 
 Please note: Every message except commands will be considered a prompt.`;
 }
