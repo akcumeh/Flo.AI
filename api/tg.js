@@ -4,6 +4,7 @@ import { connectDB } from '../db/db.js';
 import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
 import {
@@ -615,6 +616,8 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
 /* === Message Handlers === */
 
 bot.on(message('photo'), async (ctx) => {
+    
+
     try {
         const userId = prefix + ctx.from.id;
 
@@ -629,6 +632,10 @@ bot.on(message('photo'), async (ctx) => {
             });
             await ctx.reply(walkThru(user.tokens));
             return;
+        }
+
+        if(ctx.message.media_group_id) {
+            return await handleMediaGroupItem(ctx, user, 'photo');
         }
 
         if (user.tokens < 2) {
@@ -721,6 +728,10 @@ bot.on(message('document'), async (ctx) => {
             return;
         }
 
+        if (ctx.message.media_group_id) {
+            return await handleMediaGroupItem(ctx, user, 'document');
+        }
+
         if (user.tokens < 2) {
             return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
         }
@@ -797,6 +808,188 @@ bot.on(message('document'), async (ctx) => {
         }
     } catch (error) {
         console.error('Error handling document:', error);
+        await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+});
+
+bot.on('media_group', async (ctx) => {
+    try {
+        const userId = prefix + ctx.from.id;
+
+        await connectDB(process.env.MONGODB_URI);
+        let user = await getUser(userId);
+
+        if (!user) {
+            user = await addUser({
+                id: userId,
+                name: ctx.from.first_name,
+                tokens: 25
+            });
+            await ctx.reply(walkThru(user.tokens));
+            return;
+        }
+
+        // Check if user has enough tokens (2 tokens for media processing)
+        if (user.tokens < 2) {
+            return ctx.reply('You don\'t have enough tokens for media uploads. Send /payments to top up.');
+        }
+
+        // Get or create media group
+        const mediaGroupId = ctx.message.media_group_id;
+        let mediaGroup = await MediaGroup.findOne({
+            userId: userId,
+            mediaGroupId: mediaGroupId,
+            status: 'collecting'
+        });
+
+        if (!mediaGroup) {
+            mediaGroup = new MediaGroup({
+                userId,
+                mediaGroupId,
+                status: 'collecting',
+                caption: ctx.message.caption || '',
+                mediaItems: [],
+                tokenCost: 2,
+                expiresAt: new Date(Date.now() + 60000), // 1 minute expiry
+                lastActivity: new Date()
+            });
+        } else {
+            // Update last activity
+            mediaGroup.lastActivity = new Date();
+            // Update caption if present and not already set
+            if (ctx.message.caption && !mediaGroup.caption) {
+                mediaGroup.caption = ctx.message.caption;
+            }
+        }
+
+        // Add the media item
+        const mediaType = ctx.message.photo ? 'photo' : 'document';
+        const fileId = ctx.message.photo
+            ? ctx.message.photo[ctx.message.photo.length - 1].file_id
+            : ctx.message.document.file_id;
+
+        // Check if we already have this file (avoid duplicates)
+        const fileExists = mediaGroup.mediaItems.some(item => item.fileId === fileId);
+        if (!fileExists) {
+            mediaGroup.mediaItems.push({
+                fileId,
+                type: mediaType,
+                mimeType: ctx.message.document?.mime_type || 'image/jpeg',
+                fileName: ctx.message.document?.file_name || `photo_${mediaGroup.mediaItems.length + 1}.jpg`
+            });
+        }
+
+        // Check if user is trying to send too many items (>5)
+        if (mediaGroup.mediaItems.length > 5) {
+            mediaGroup.status = 'cancelled';
+            await mediaGroup.save();
+            return ctx.reply('You can only send up to 5 items in a group. Please try again with fewer items.');
+        }
+
+        await mediaGroup.save();
+
+        // Start a timeout to process the group after a short delay (to collect all items)
+        setTimeout(async () => {
+            try {
+                await processMediaGroup(mediaGroupId, userId);
+            } catch (error) {
+                console.error('Error processing media group:', error);
+            }
+        }, 2000); // 2 seconds delay
+
+    } catch (error) {
+        console.error('Error handling media group:', error);
+        await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+});
+
+bot.on('media_group_id', async (ctx) => {
+    try {
+        const userId = prefix + ctx.from.id;
+
+        await connectDB(process.env.MONGODB_URI);
+        let user = await getUser(userId);
+
+        if (!user) {
+            user = await addUser({
+                id: userId,
+                name: ctx.from.first_name,
+                tokens: 25
+            });
+            await ctx.reply(walkThru(user.tokens));
+            return;
+        }
+
+        // Check if user has enough tokens (2 tokens for media processing)
+        if (user.tokens < 2) {
+            return ctx.reply('You don\'t have enough tokens for media uploads. Send /payments to top up.');
+        }
+
+        // Get or create media group
+        const mediaGroupId = ctx.message.media_group_id;
+        let mediaGroup = await MediaGroup.findOne({
+            userId: userId,
+            mediaGroupId: mediaGroupId,
+            status: 'collecting'
+        });
+
+        if (!mediaGroup) {
+            mediaGroup = new MediaGroup({
+                userId,
+                mediaGroupId,
+                status: 'collecting',
+                caption: ctx.message.caption || '',
+                mediaItems: [],
+                tokenCost: 2,
+                expiresAt: new Date(Date.now() + 60000), // 1 minute expiry
+                lastActivity: new Date()
+            });
+        } else {
+            // Update last activity
+            mediaGroup.lastActivity = new Date();
+            // Update caption if present and not already set
+            if (ctx.message.caption && !mediaGroup.caption) {
+                mediaGroup.caption = ctx.message.caption;
+            }
+        }
+
+        // Add the media item
+        const mediaType = ctx.message.photo ? 'photo' : 'document';
+        const fileId = ctx.message.photo
+            ? ctx.message.photo[ctx.message.photo.length - 1].file_id
+            : ctx.message.document.file_id;
+
+        // Check if we already have this file (avoid duplicates)
+        const fileExists = mediaGroup.mediaItems.some(item => item.fileId === fileId);
+        if (!fileExists) {
+            mediaGroup.mediaItems.push({
+                fileId,
+                type: mediaType,
+                mimeType: ctx.message.document?.mime_type || 'image/jpeg',
+                fileName: ctx.message.document?.file_name || `photo_${mediaGroup.mediaItems.length + 1}.jpg`
+            });
+        }
+
+        // Check if user is trying to send too many items (>5)
+        if (mediaGroup.mediaItems.length > 5) {
+            mediaGroup.status = 'cancelled';
+            await mediaGroup.save();
+            return ctx.reply('You can only send up to 5 items in a group. Please try again with fewer items.');
+        }
+
+        await mediaGroup.save();
+
+        // Start a timeout to process the group after a short delay (to collect all items)
+        setTimeout(async () => {
+            try {
+                await processMediaGroup(mediaGroupId, userId);
+            } catch (error) {
+                console.error('Error processing media group:', error);
+            }
+        }, 2000); // 2 seconds delay
+
+    } catch (error) {
+        console.error('Error handling media group:', error);
         await ctx.reply('Sorry, something went wrong. Please try again.');
     }
 });
@@ -1115,6 +1308,111 @@ async function processCardPayment(ctx, user, state) {
     }
 }
 
+async function processMediaGroup(mediaGroupId, userId) {
+    try {
+        await connectDB(process.env.MONGODB_URI);
+
+        const mediaGroup = await MediaGroup.findOne({
+            userId: userId,
+            mediaGroupId: mediaGroupId,
+            status: 'collecting'
+        });
+
+        if (!mediaGroup || new Date() < mediaGroup.lastActivity) {
+            // Group not found or still collecting
+            return;
+        }
+
+        // If we have at least one item, process the group
+        if (mediaGroup.mediaItems.length > 0) {
+            const user = await getUser(userId);
+            if (!user) {
+                return;
+            }
+
+            // Update status to processing
+            mediaGroup.status = 'processing';
+            await mediaGroup.save();
+
+            // Deduct tokens
+            user.tokens -= mediaGroup.tokenCost;
+            await updateUser(userId, { tokens: user.tokens });
+
+            // Send a processing message
+            const telegramId = userId.substring(prefix.length);
+            const processingMsg = await bot.telegram.sendMessage(telegramId, 'Processing your media group...');
+
+            try {
+                // Process all media files
+                const mediaFiles = [];
+                for (const item of mediaGroup.mediaItems) {
+                    const fileBuffer = await downloadTelegramFile(bot, item.fileId);
+                    const b64File = Buffer.from(fileBuffer).toString('base64');
+                    mediaFiles.push({
+                        b64: b64File,
+                        type: item.type === 'photo' ? 'image' : 'document',
+                        mimeType: item.mimeType || 'image/jpeg'
+                    });
+                }
+
+                // Prepare the prompt
+                let prompt = mediaGroup.caption || "Analyze these images together as a group.";
+                prompt += " Please consider all images as part of a single request and provide one comprehensive response.";
+
+                // Process with Claude by sending the first image with a special prompt
+                // indicating more images are included in the analysis
+                const firstFile = mediaFiles[0];
+
+                // Create a combined prompt that mentions all images
+                let fileDescription = `I've received ${mediaFiles.length} files from the user.\n`;
+                mediaFiles.forEach((file, index) => {
+                    fileDescription += `File ${index + 1}: ${file.type} (${file.mimeType})\n`;
+                });
+
+                // Add the original caption from the user
+                const fullPrompt = `${fileDescription}\n${prompt}`;
+
+                // Send first image to Claude with the context about other images
+                let claudeAnswer = await askClaudeWithAtt(
+                    user,
+                    firstFile.b64,
+                    [firstFile.type, firstFile.mimeType],
+                    fullPrompt
+                );
+
+                // Update the media group status
+                mediaGroup.status = 'completed';
+                mediaGroup.result = claudeAnswer;
+                await mediaGroup.save();
+
+                // Send the response
+                await bot.telegram.sendMessage(telegramId, claudeAnswer);
+
+            } catch (error) {
+                console.error('Error processing media group:', error);
+
+                // Refund tokens
+                user.tokens += mediaGroup.tokenCost;
+                await updateUser(userId, { tokens: user.tokens });
+
+                // Update group status
+                mediaGroup.status = 'failed';
+                mediaGroup.error = error.message;
+                await mediaGroup.save();
+
+                // Send error message
+                const telegramId = userId.substring(prefix.length);
+                await bot.telegram.sendMessage(
+                    telegramId,
+                    'Sorry, there was an error processing your media group. Your tokens have been refunded.'
+                );
+            }
+        }
+    } catch (error) {
+        console.error('Error in processMediaGroup:', error);
+    }
+}
+
 /* === API Endpoints === */
 
 router.post('/payment/callback', async (req, res) => {
@@ -1329,6 +1627,10 @@ const mediaGroupSchema = new mongoose.Schema({
         required: true,
         index: true
     },
+    mediaGroupId: {  // Critical field for identifying groups
+        type: String,
+        required: true
+    },
     status: {
         type: String,
         enum: ['collecting', 'processing', 'completed', 'cancelled', 'failed'],
@@ -1343,7 +1645,9 @@ const mediaGroupSchema = new mongoose.Schema({
         type: {
             type: String,
             enum: ['photo', 'document']
-        }
+        },
+        mimeType: String,
+        fileName: String
     }],
     tokenCost: {
         type: Number,
@@ -1368,6 +1672,27 @@ const mediaGroupSchema = new mongoose.Schema({
         expires: 86400 // Auto-delete after 24 hours
     }
 });
+
+// Schedule cleanup of expired media groups
+setInterval(async () => {
+    try {
+        await connectDB(process.env.MONGODB_URI);
+
+        // Find expired collecting groups
+        const expiredGroups = await MediaGroup.find({
+            status: 'collecting',
+            expiresAt: { $lt: new Date() }
+        });
+
+        for (const group of expiredGroups) {
+            // Update status to cancelled
+            group.status = 'cancelled';
+            await group.save();
+        }
+    } catch (error) {
+        console.error('Error cleaning up media groups:', error);
+    }
+}, 60000);
 
 // Create models
 const RequestState = mongoose.models.RequestState || mongoose.model('RequestState', requestStateSchema);
