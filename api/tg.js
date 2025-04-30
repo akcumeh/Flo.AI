@@ -42,9 +42,7 @@ bot.on('inline_query', async (ctx) => {
 // Command handlers
 bot.command('start', async (ctx) => {
     try {
-        console.log('Received /start command from', ctx.from.id);
         const userId = prefix + ctx.from.id;
-
         await connectDB(process.env.MONGODB_URI);
         let user = await getUser(userId);
 
@@ -57,9 +55,35 @@ bot.command('start', async (ctx) => {
             await ctx.reply("Welcome to Florence*!");
         }
 
-        // Reset conversation
+        // Save existing conversation if it has any messages
+        if (user.convoHistory && user.convoHistory.length > 0) {
+            // Create a title for the conversation
+            let title = "Conversation";
+            if (user.convoHistory.length > 0) {
+                const firstUserMsg = user.convoHistory.find(msg => msg.role === "user")?.content;
+                if (firstUserMsg) {
+                    // Create title from first message (truncated)
+                    title = firstUserMsg.substring(0, 20) + (firstUserMsg.length > 20 ? "..." : "");
+                }
+            }
+
+            // Initialize convos array if it doesn't exist
+            if (!user.convos) user.convos = [];
+
+            // Add current conversation to saved conversations
+            user.convos.push({
+                title: title,
+                messages: [...user.convoHistory]
+            });
+
+            // Save the updated conversations list
+            await updateUser(userId, { convos: user.convos });
+        }
+
+        // Now safe to reset the conversation
         user.convoHistory = [];
         await updateUser(userId, { convoHistory: [] });
+
         await ctx.reply(`Hello ${ctx.from.first_name}, what do you need help with today?\n\nYou have ${user.tokens} tokens.`);
     } catch (error) {
         console.error('Error in /start command:', error);
