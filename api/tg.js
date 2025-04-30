@@ -486,6 +486,7 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
         }
 
         const reference = ctx.match[1];
+        console.log(`Verification requested for reference: ${reference}`);
 
         // Answer the callback query with a loading message
         await ctx.answerCbQuery('Verifying your payment...', false);
@@ -493,37 +494,92 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
         // Show a processing message
         const processingMsg = await ctx.reply('Verifying your payment...');
 
-        // Verify the transaction
-        const verificationResult = await verifyTransaction(reference);
+        try {
+            // Verify the transaction
+            const verificationResult = await verifyTransaction(reference);
+            console.log('Verification result:', JSON.stringify(verificationResult));
 
-        if (verificationResult.success) {
-            const newTokens = user.tokens + verificationResult.tokens;
-            await updateUser(userId, { tokens: newTokens });
+            if (verificationResult && verificationResult.success) {
+                // For bank transfers that need manual verification
+                if (verificationResult.status === 'pending_manual_verification') {
+                    // Delete the processing message
+                    try {
+                        await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                    } catch (deleteError) {
+                        console.log('Could not delete message:', deleteError.message);
+                    }
 
-            // Delete the processing message and send success message
-            await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                    await ctx.reply(
+                        `Your bank transfer is being processed.\n\n` +
+                        `Reference: ${reference}\n\n` +
+                        `We will manually verify your payment and add ${verificationResult.tokens} tokens to your account soon. This usually takes less than 24 hours.`
+                    );
 
-            await ctx.reply(
-                `Payment verified successfully! ✅\n\n` +
-                `${verificationResult.tokens} tokens have been added to your account.\n\n` +
-                `You now have ${newTokens} tokens.`
-            );
+                    // Clean up payment state
+                    await PaymentState.deleteOne({ userId });
 
-            // Clean up payment state
-            await PaymentState.deleteOne({ userId });
+                    // Edit the original message to remove the verify button
+                    try {
+                        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+                    } catch (editError) {
+                        console.log('Could not edit original message:', editError.message);
+                    }
 
-            // Edit the original message to remove the verify button
-            try {
-                await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-            } catch (error) {
-                // Ignore errors if message is too old to edit
-                console.log('Could not edit original message:', error.message);
+                    return;
+                }
+
+                // For successful verifications (typically card payments)
+                const newTokens = user.tokens + verificationResult.tokens;
+                await updateUser(userId, { tokens: newTokens });
+
+                // Delete the processing message and send success message
+                try {
+                    await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                } catch (deleteError) {
+                    console.log('Could not delete message:', deleteError.message);
+                }
+
+                await ctx.reply(
+                    `Payment verified successfully! ✅\n\n` +
+                    `${verificationResult.tokens} tokens have been added to your account.\n\n` +
+                    `You now have ${newTokens} tokens.`
+                );
+
+                // Clean up payment state
+                await PaymentState.deleteOne({ userId });
+
+                // Edit the original message to remove the verify button
+                try {
+                    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+                } catch (editError) {
+                    console.log('Could not edit original message:', editError.message);
+                }
+            } else {
+                // Delete the processing message and send failure message
+                try {
+                    await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                } catch (deleteError) {
+                    console.log('Could not delete message:', deleteError.message);
+                }
+
+                const errorMessage = verificationResult?.message || 'Transaction verification failed';
+
+                await ctx.reply(
+                    `Payment verification failed: ${errorMessage}\n\n` +
+                    `If you just completed the payment, please wait a few minutes and try again.`
+                );
             }
-        } else {
-            // Delete the processing message and send failure message
-            await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+        } catch (verifyError) {
+            console.error('Error in verification process:', verifyError);
 
-            await ctx.reply(`Payment verification failed: ${verificationResult.message}\n\nIf you just completed the payment, please wait a few minutes and try again.`);
+            // Clean up processing message
+            try {
+                await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+            } catch (deleteError) {
+                console.log('Could not delete message:', deleteError.message);
+            }
+
+            await ctx.reply('An error occurred while verifying your payment. Please try again later or contact support.');
         }
     } catch (error) {
         console.error('Error in verify payment button handler:', error);
@@ -830,47 +886,63 @@ async function handlePaymentMessage(ctx, userId, state) {
                 state.email = email;
                 await state.save();
 
-                const callbackUrl = `${process.env.BOT_WEBHOOK_URL}/tg/payment/callback`;
+                const callbackUrl = `${process.env.BOT_WEBHOOK_URL || 'https://your-app-url.com'}/tg/payment/callback`;
 
-                const transferResult = await initializeBankTransfer(
-                    {
-                        userId: user.userId,
-                        email: email
-                    },
-                    state.amount,
-                    callbackUrl
-                );
+                // Log important information for debugging
+                console.log(`Initializing bank transfer for user: ${userId}, email: ${email}, amount: ${state.amount}`);
 
-                if (transferResult.success) {
-                    state.reference = transferResult.reference;
-                    await state.save();
-
-                    // First message with payment link and button
-                    await ctx.reply(
-                        `Please complete your payment by clicking the link below:\n\n${transferResult.authorizationUrl}\n\n` +
-                        `After payment, your tokens will be added automatically. If you don't receive a confirmation within 5 minutes, click the button below:`,
+                try {
+                    const transferResult = await initializeBankTransfer(
                         {
-                            reply_markup: {
-                                inline_keyboard: [
-                                    [{ text: '🔄 Verify Payment', callback_data: `verify_${transferResult.reference}` }]
-                                ]
-                            }
-                        }
+                            userId: user.userId,
+                            email: email
+                        },
+                        state.amount,
+                        callbackUrl
                     );
 
-                    // Second message with just the reference for easy copying
-                    await ctx.reply(
-                        `Reference (tap to copy):\n\`${transferResult.reference}\``,
-                        { parse_mode: 'Markdown' }
-                    );
-                } else {
-                    console.error('Payment initialization failed:', transferResult.message);
-                    await ctx.reply(`Payment initialization failed: ${transferResult.message}`);
+                    console.log('Bank transfer result:', JSON.stringify(transferResult));
+
+                    if (transferResult && transferResult.success) {
+                        state.reference = transferResult.reference;
+                        await state.save();
+
+                        // Ensure all needed properties exist before accessing them
+                        const bankName = transferResult.bankDetails?.bankName || 'Bank information unavailable';
+                        const accountName = transferResult.bankDetails?.accountName || 'Account information unavailable';
+                        const accountNumber = transferResult.bankDetails?.accountNumber || 'Account number unavailable';
+                        const reference = transferResult.reference || 'Reference unavailable';
+
+                        await ctx.reply(
+                            `Please transfer ₦${state.amount} to:\n\n` +
+                            `Bank: ${bankName}\n` +
+                            `Account Name: ${accountName}\n` +
+                            `Account Number: ${accountNumber}\n\n` +
+                            `Reference: ${reference}\n\n` +
+                            `Important: Use the reference above as your payment description.\n\n` +
+                            `After making the transfer, click the button below to verify:`,
+                            {
+                                reply_markup: {
+                                    inline_keyboard: [
+                                        [{ text: '🔄 Verify Payment', callback_data: `verify_${reference}` }]
+                                    ]
+                                }
+                            }
+                        );
+                    } else {
+                        const errorMessage = transferResult?.message || 'Unknown error';
+                        console.error('Bank transfer setup failed:', errorMessage);
+                        await ctx.reply(`Error setting up bank transfer: ${errorMessage}`);
+                    }
+                } catch (transferError) {
+                    console.error('Exception during bank transfer setup:', transferError);
+                    await ctx.reply('An unexpected error occurred while setting up the bank transfer. Please try again.');
                 }
             }
         }
     } catch (error) {
         console.error('Error in handlePaymentMessage:', error);
+        await ctx.reply('An error occurred with the payment process. Please try again or contact support.');
         throw error;
     }
 }
