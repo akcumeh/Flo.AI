@@ -271,8 +271,8 @@ You currently have ${tokens} tokens*. Feel free to send your text (one token*), 
 
 Here are a few helpful commands for a smooth experience:
 
-/start - Florence* is now listening to you.
-/about - for more about Florence*.
+/start - Florence* is now listening to you. This also starts a NEW conversation thread.
+/about - Learn more about Florence*.
 /tokens - see how many tokens you have left.
 /payments - Top up your tokens.
 /conversations - View and continue previous conversations.

@@ -1,19 +1,23 @@
 {
-    "version": 2,
-    "builds": [
-        {
-            "src": "api/**/*.js",
-            "use": "@vercel/node"
-        }
-    ],
-    "routes": [
-        {
-            "src": "/tg",
-            "dest": "/api/tg.js"
-        },
-        {
-            "src": "/wa",
-            "dest": "/api/wa.js"
-        }
-    ]
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/telegram/webhook",
+      "dest": "/api/telegram.js"
+    },
+    {
+      "src": "/api/whatsapp/webhook",
+      "dest": "/api/whatsapp.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/index.js"
+    }
+  ]
 }
