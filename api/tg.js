@@ -11,11 +11,33 @@ import {
 } from '../utils/utils.js';
 import { downloadTelegramFile } from '../utils/getMsgContent.js';
 import { Transaction } from '../models/transactions.js';
+import VerificationState from '../models/verificationState.js';
 import { initializeCardPayment, initializeBankTransfer, verifyTransaction } from '../utils/paystack.js';
 
 dotenv.config();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const prefix = 'tg-';
+
+bot.on('inline_query', async (ctx) => {
+    const query = ctx.inlineQuery.query;
+
+    // Check if the query is related to verification
+    if (query.toLowerCase().startsWith('verify')) {
+        await ctx.answerInlineQuery([
+            {
+                id: '1',
+                type: 'article',
+                title: 'Verify Payment',
+                description: 'Enter your payment reference number',
+                input_message_content: {
+                    message_text: 'Please enter your payment reference number to verify:',
+                }
+            }
+        ], {
+            cache_time: 0
+        });
+    }
+});
 
 // Command handlers
 bot.command('start', async (ctx) => {
@@ -207,7 +229,6 @@ bot.command('transactions', async (ctx) => {
 bot.command('verify', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
-
         await connectDB(process.env.MONGODB_URI);
         const user = await getUser(userId);
 
@@ -216,31 +237,50 @@ bot.command('verify', async (ctx) => {
         }
 
         const parts = ctx.message.text.split(' ');
-        if (parts.length < 2) {
-            return ctx.reply('Please provide a reference number:\n\n/verify REFERENCE');
+
+        // If reference is provided with the command
+        if (parts.length >= 2) {
+            const reference = parts[1].trim();
+            const verifyMsg = await ctx.reply('Verifying your payment...');
+            console.log(`User ${userId} is verifying payment with reference: ${reference}`);
+
+            const verificationResult = await verifyTransaction(reference);
+            console.log('Verification result:', verificationResult);
+
+            if (verificationResult.success) {
+                const newTokens = user.tokens + verificationResult.tokens;
+                await updateUser(userId, { tokens: newTokens });
+
+                await ctx.reply(
+                    `Payment verified successfully! ✅\n\n` +
+                    `${verificationResult.tokens} tokens have been added to your account.\n\n` +
+                    `You now have ${newTokens} tokens.`
+                );
+
+                // Clean up payment state
+                await PaymentState.deleteOne({ userId });
+            } else {
+                await ctx.reply(`Payment verification failed: ${verificationResult.message}`);
+            }
         }
-
-        const reference = parts[1].trim();
-        const verifyMsg = await ctx.reply('Verifying your payment...');
-        console.log(`User ${userId} is verifying payment with reference: ${reference}`);
-
-        const verificationResult = await verifyTransaction(reference);
-        console.log('Verification result:', verificationResult);
-
-        if (verificationResult.success) {
-            const newTokens = user.tokens + verificationResult.tokens;
-            await updateUser(userId, { tokens: newTokens });
-
-            await ctx.reply(
-                `Payment verified successfully! ✅\n\n` +
-                `${verificationResult.tokens} tokens have been added to your account.\n\n` +
-                `You now have ${newTokens} tokens.`
+        // If no reference provided, start the two-step verification process
+        else {
+            // Create or update verification state
+            await VerificationState.findOneAndUpdate(
+                { userId },
+                { status: 'awaiting_reference', createdAt: new Date() },
+                { upsert: true }
             );
 
-            // Clean up payment state
-            await PaymentState.deleteOne({ userId });
-        } else {
-            await ctx.reply(`Payment verification failed: ${verificationResult.message}`);
+            await ctx.reply(
+                'Please enter the payment reference number to verify:',
+                {
+                    reply_markup: {
+                        force_reply: true,
+                        selective: true
+                    }
+                }
+            );
         }
     } catch (error) {
         console.error('Error in verify command:', error);
@@ -700,6 +740,43 @@ bot.on('message', async (ctx) => {
             return;
         }
 
+        if (ctx.message.text && !ctx.message.text.startsWith('/')) {
+            // Check if user is in verification state
+            const verificationState = await VerificationState.findOne({ userId });
+
+            if (verificationState && verificationState.status === 'awaiting_reference') {
+                // Process the reference number
+                const reference = ctx.message.text.trim();
+
+                // Delete the verification state
+                await VerificationState.deleteOne({ userId });
+
+                const verifyMsg = await ctx.reply('Verifying your payment...');
+                console.log(`User ${userId} is verifying payment with reference: ${reference}`);
+
+                const verificationResult = await verifyTransaction(reference);
+                console.log('Verification result:', verificationResult);
+
+                if (verificationResult.success) {
+                    const newTokens = userId.tokens + verificationResult.tokens;
+                    await updateUser(userId, { tokens: newTokens });
+
+                    await ctx.reply(
+                        `Payment verified successfully! ✅\n\n` +
+                        `${verificationResult.tokens} tokens have been added to your account.\n\n` +
+                        `You now have ${newTokens} tokens.`
+                    );
+
+                    // Clean up payment state
+                    await PaymentState.deleteOne({ userId });
+                } else {
+                    await ctx.reply(`Payment verification failed: ${verificationResult.message}`);
+                }
+
+                return; // Exit handler since we've handled the verification
+            }
+        }
+
         // Handle regular message
         await handleRegularMessage(ctx, userId);
     } catch (error) {
@@ -768,14 +845,10 @@ async function handlePaymentMessage(ctx, userId, state) {
                     state.reference = transferResult.reference;
                     await state.save();
 
+                    // First message with payment link and button
                     await ctx.reply(
-                        `Please transfer ₦${state.amount} to:\n\n` +
-                        `Bank: ${transferResult.bankDetails.bankName}\n` +
-                        `Account Name: ${transferResult.bankDetails.accountName}\n` +
-                        `Account Number: ${transferResult.bankDetails.accountNumber}\n\n` +
-                        `Reference: ${transferResult.reference}\n\n` +
-                        `Important: Use the reference above as your payment description.\n\n` +
-                        `After making the transfer, click the button below to verify:`,
+                        `Please complete your payment by clicking the link below:\n\n${transferResult.authorizationUrl}\n\n` +
+                        `After payment, your tokens will be added automatically. If you don't receive a confirmation within 5 minutes, click the button below:`,
                         {
                             reply_markup: {
                                 inline_keyboard: [
@@ -784,8 +857,15 @@ async function handlePaymentMessage(ctx, userId, state) {
                             }
                         }
                     );
+
+                    // Second message with just the reference for easy copying
+                    await ctx.reply(
+                        `Reference (tap to copy):\n\`${transferResult.reference}\``,
+                        { parse_mode: 'Markdown' }
+                    );
                 } else {
-                    await ctx.reply(`Error setting up bank transfer: ${transferResult.message}`);
+                    console.error('Payment initialization failed:', transferResult.message);
+                    await ctx.reply(`Payment initialization failed: ${transferResult.message}`);
                 }
             }
         }
