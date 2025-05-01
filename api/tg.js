@@ -46,25 +46,33 @@ bot.command('start', async (ctx) => {
         const userId = prefix + ctx.from.id;
         await connectDB(process.env.MONGODB_URI);
         let user = await getUser(userId);
+        let isNewUser = false;
 
         if (!user) {
+            isNewUser = true;
             user = await addUser({
                 id: userId,
                 name: ctx.from.first_name,
-                tokens: 25
+                tokens: 10
             });
-            await ctx.reply("Welcome to Florence*!");
         }
 
         // Save existing conversation if it has any messages
         if (user.convoHistory && user.convoHistory.length > 0) {
             // Create a title for the conversation
             let title = "Conversation";
-            if (user.convoHistory.length > 0) {
-                const firstUserMsg = user.convoHistory.find(msg => msg.role === "user")?.content;
-                if (firstUserMsg) {
-                    // Create title from first message (truncated)
-                    title = firstUserMsg.substring(0, 20) + (firstUserMsg.length > 20 ? "..." : "");
+
+            // Find the first user message in conversation history
+            const firstUserMessage = user.convoHistory.find(msg => msg.role === "user");
+
+            if (firstUserMessage) {
+                // Check if the content is a string before using substring
+                if (typeof firstUserMessage.content === 'string') {
+                    title = firstUserMessage.content.substring(0, 20) +
+                        (firstUserMessage.content.length > 20 ? "..." : "");
+                } else if (Array.isArray(firstUserMessage.content) && firstUserMessage.content.length > 0) {
+                    // If it's an array (for messages with attachments), use a default title
+                    title = "Conversation with attachment";
                 }
             }
 
@@ -85,7 +93,12 @@ bot.command('start', async (ctx) => {
         user.convoHistory = [];
         await updateUser(userId, { convoHistory: [] });
 
-        await ctx.reply(`Hello ${ctx.from.first_name}, what do you need help with today?\n\nYou have ${user.tokens} tokens.`);
+        // For new users, show the walkthrough
+        if (isNewUser) {
+            await ctx.reply(walkThru(user.tokens));
+        } else {
+            await ctx.reply(`Hello ${ctx.from.first_name}, what do you need help with today?\n\nYou have ${user.tokens} tokens.`);
+        }
     } catch (error) {
         console.error('Error in /start command:', error);
         await ctx.reply('Sorry, something went wrong. Please try again.');
@@ -187,31 +200,36 @@ bot.command('payments', async (ctx) => {
         }
 
         // Create/update payment state in database
-        await PaymentState.findOneAndUpdate(
+        const paymentState = await PaymentState.findOneAndUpdate(
             { userId },
             {
                 step: 'init',
                 amount: 1000,
-                tokens: 25,
+                tokens: 10,
                 createdAt: new Date()
             },
             { upsert: true, new: true }
         );
 
-        await ctx.reply(
-            'Tokens cost 1,000 naira for 25 tokens.\n\n' +
-            'Choose a payment method:',
-            {
-                reply_markup: {
-                    inline_keyboard: [
-                        [
-                            { text: 'Pay with Card', callback_data: 'payment_card' },
-                            { text: 'Bank Transfer', callback_data: 'payment_bank' }
-                        ]
-                    ]
+        // Check if user already has an email saved
+        if (user.email) {
+            // Skip email collection step and move directly to payment
+            return processPayment(ctx, user, paymentState);
+        } else {
+            // Request email from user
+            paymentState.step = 'email';
+            await paymentState.save();
+
+            return ctx.reply(
+                'Please enter your email address for payment receipt (we only need this once):',
+                {
+                    reply_markup: {
+                        force_reply: true,
+                        selective: true
+                    }
                 }
-            }
-        );
+            );
+        }
     } catch (error) {
         console.error('Error in /payments command:', error);
         await ctx.reply('Sorry, something went wrong. Please try again.');
@@ -350,6 +368,10 @@ bot.command('stem', async (ctx) => {
 
 bot.command('research', async (ctx) => {
     ctx.reply("The research feature is coming soon :)")
+});
+
+bot.command('feedback', async (ctx) => {
+    ctx.reply(`Enjoying Florence*?\n\nEven if you absolutely hate it 😔, please let us know:\n\nhttps://forms.gle/SwhApkszXZJGcRyP7\n\nYour feedback is greatly appreciated and helps us improve Florence*. Thank you 🩵`)
 });
 
 bot.command('help', async (ctx) => {
@@ -628,7 +650,7 @@ bot.on(message('photo'), async (ctx) => {
             user = await addUser({
                 id: userId,
                 name: ctx.from.first_name,
-                tokens: 25
+                tokens: 10
             });
             await ctx.reply(walkThru(user.tokens));
             return;
@@ -722,7 +744,7 @@ bot.on(message('document'), async (ctx) => {
             user = await addUser({
                 id: userId,
                 name: ctx.from.first_name,
-                tokens: 25
+                tokens: 10
             });
             await ctx.reply(walkThru(user.tokens));
             return;
@@ -823,7 +845,7 @@ bot.on('media_group', async (ctx) => {
             user = await addUser({
                 id: userId,
                 name: ctx.from.first_name,
-                tokens: 25
+                tokens: 10
             });
             await ctx.reply(walkThru(user.tokens));
             return;
@@ -914,7 +936,7 @@ bot.on('media_group_id', async (ctx) => {
             user = await addUser({
                 id: userId,
                 name: ctx.from.first_name,
-                tokens: 25
+                tokens: 10
             });
             await ctx.reply(walkThru(user.tokens));
             return;
@@ -1075,92 +1097,70 @@ async function handlePaymentMessage(ctx, userId, state) {
                 return ctx.reply('Please enter a valid email address.');
             }
 
+            // Save email to user profile
             await updateUser(userId, { email: email });
 
-            if (state.method === 'card') {
-                state.email = email;
-                state.step = 'save_card';
-                await state.save();
+            // Update payment state
+            state.email = email;
+            state.step = 'processing';
+            await state.save();
 
-                await ctx.reply(
-                    'Would you like to save your card for future payments?',
-                    {
-                        reply_markup: {
-                            inline_keyboard: [
-                                [
-                                    { text: 'Yes, save my card', callback_data: 'save_card_yes' },
-                                    { text: 'No, don\'t save', callback_data: 'save_card_no' }
-                                ]
-                            ]
-                        }
-                    }
-                );
-                return;
-            }
-
-            if (state.method === 'bank') {
-                state.step = 'processing';
-                state.email = email;
-                await state.save();
-
-                const callbackUrl = `${process.env.BOT_WEBHOOK_URL || 'https://your-app-url.com'}/tg/payment/callback`;
-
-                // Log important information for debugging
-                console.log(`Initializing bank transfer for user: ${userId}, email: ${email}, amount: ${state.amount}`);
-
-                try {
-                    const transferResult = await initializeBankTransfer(
-                        {
-                            userId: user.userId,
-                            email: email
-                        },
-                        state.amount,
-                        callbackUrl
-                    );
-
-                    console.log('Bank transfer result:', JSON.stringify(transferResult));
-
-                    if (transferResult && transferResult.success) {
-                        state.reference = transferResult.reference;
-                        await state.save();
-
-                        // Ensure all needed properties exist before accessing them
-                        const bankName = transferResult.bankDetails?.bankName || 'Bank information unavailable';
-                        const accountName = transferResult.bankDetails?.accountName || 'Account information unavailable';
-                        const accountNumber = transferResult.bankDetails?.accountNumber || 'Account number unavailable';
-                        const reference = transferResult.reference || 'Reference unavailable';
-
-                        await ctx.reply(
-                            `Please transfer ₦${state.amount} to:\n\n` +
-                            `Bank: ${bankName}\n` +
-                            `Account Name: ${accountName}\n` +
-                            `Account Number: ${accountNumber}\n\n` +
-                            `Reference: ${reference}\n\n` +
-                            `Important: Use the reference above as your payment description.\n\n` +
-                            `After making the transfer, click the button below to verify:`,
-                            {
-                                reply_markup: {
-                                    inline_keyboard: [
-                                        [{ text: '🔄 Verify Payment', callback_data: `verify_${reference}` }]
-                                    ]
-                                }
-                            }
-                        );
-                    } else {
-                        const errorMessage = transferResult?.message || 'Unknown error';
-                        console.error('Bank transfer setup failed:', errorMessage);
-                        await ctx.reply(`Error setting up bank transfer: ${errorMessage}`);
-                    }
-                } catch (transferError) {
-                    console.error('Exception during bank transfer setup:', transferError);
-                    await ctx.reply('An unexpected error occurred while setting up the bank transfer. Please try again.');
-                }
-            }
+            // Process the payment
+            return processPayment(ctx, user, state);
         }
     } catch (error) {
         console.error('Error in handlePaymentMessage:', error);
         await ctx.reply('An error occurred with the payment process. Please try again or contact support.');
         throw error;
+    }
+}
+
+async function processPayment(ctx, user, state) {
+    try {
+        const processingMsg = await ctx.reply('Setting up your payment...');
+        const callbackUrl = `${process.env.BOT_WEBHOOK_URL}/tg/payment/callback`;
+
+        // Initialize the payment with Paystack
+        const paymentResult = await initializeCardPayment(
+            {
+                userId: user.userId,
+                email: state.email || user.email,
+                // Remove saveCard feature
+                saveCard: false
+            },
+            state.amount,
+            callbackUrl
+        );
+
+        if (paymentResult.success) {
+            state.reference = paymentResult.reference;
+            await state.save();
+
+            // First message with payment link and button
+            await ctx.reply(
+                `Please complete your payment of ₦${state.amount} for ${state.tokens} tokens by clicking the link below:\n\n${paymentResult.authorizationUrl}\n\n` +
+                `After payment, your tokens will be added automatically. If you don't receive a confirmation within 5 minutes, click the button below:`,
+                {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: '🔄 Verify Payment', callback_data: `verify_${paymentResult.reference}` }]
+                        ]
+                    }
+                }
+            );
+
+            // Second message with just the reference for easy copying
+            await ctx.reply(
+                `Reference (tap to copy):\n\`${paymentResult.reference}\``,
+                { parse_mode: 'Markdown' }
+            );
+        } else {
+            console.error('Payment initialization failed:', paymentResult.message);
+            await ctx.reply(`Payment initialization failed: ${paymentResult.message}`);
+        }
+    } catch (error) {
+        console.error('Error processing payment:', error);
+        await ctx.reply('Sorry, something went wrong with the payment process. Please try again.');
     }
 }
 
@@ -1172,7 +1172,7 @@ async function handleRegularMessage(ctx, userId) {
             user = await addUser({
                 id: userId,
                 name: ctx.from.first_name,
-                tokens: 25
+                tokens: 10
             });
             await ctx.reply(walkThru(user.tokens));
             return;
@@ -1601,7 +1601,7 @@ const paymentStateSchema = new mongoose.Schema({
     },
     tokens: {
         type: Number,
-        default: 25
+        default: 10
     },
     email: {
         type: String

@@ -47,7 +47,7 @@ function getNumericUserId(userId) {
 export async function initializeCardPayment(user, amount, callbackUrl) {
     try {
         const numericUserId = getNumericUserId(user.userId);
-        const reference = `FLO-CARD-${Date.now()}-${numericUserId}`;
+        const reference = `FLO-PAY-${Date.now()}-${numericUserId}`;
 
         const payload = {
             email: user.email || `${numericUserId}@placeholder.com`,
@@ -57,8 +57,7 @@ export async function initializeCardPayment(user, amount, callbackUrl) {
             metadata: {
                 user_id: user.userId,
                 payment_type: 'token_purchase',
-                tokens: Math.floor(amount / 40), // 1000 Naira = 25 tokens
-                save_card: user.saveCard || false
+                tokens: Math.floor(amount / 100) // 1000 Naira = 25 tokens
             }
         };
 
@@ -69,12 +68,11 @@ export async function initializeCardPayment(user, amount, callbackUrl) {
                 userId: user.userId,
                 reference,
                 amount,
-                tokens: Math.floor(amount / 40),
+                tokens: Math.floor(amount / 100),
                 email: user.email,
-                method: 'card',
+                method: 'card', // Keep this for database consistency
                 status: 'pending',
                 metadata: {
-                    save_card: user.saveCard || false,
                     authorizationUrl: response.data.authorization_url
                 }
             });
@@ -92,7 +90,7 @@ export async function initializeCardPayment(user, amount, callbackUrl) {
             };
         }
     } catch (error) {
-        console.error('Card payment initialization error:', error);
+        console.error('Payment initialization error:', error);
         return {
             success: false,
             message: 'An error occurred while initializing payment',
@@ -119,7 +117,7 @@ export async function initializeBankTransfer(user, amount, callbackUrl) {
             userId: user.userId,
             reference,
             amount,
-            tokens: Math.floor(amount / 40),
+            tokens: Math.floor(amount / 100),
             email: user.email,
             method: 'bank_transfer',
             status: 'pending',

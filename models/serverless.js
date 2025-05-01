@@ -73,7 +73,7 @@ const paymentStateSchema = new mongoose.Schema({
     },
     tokens: {
         type: Number,
-        default: 25
+        default: 10
     },
     email: {
         type: String

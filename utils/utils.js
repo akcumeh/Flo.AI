@@ -16,13 +16,13 @@ let anthropic = new Anthropic({
 console.log('✅ Claude API initialized successfully');
 
 // User Management
-export async function addUser({ id, name, tokens = 25 }) {
+export async function addUser({ id, name, tokens = 10 }) {
     await connectDB(MONGODB_URI);
 
     const userData = {
         userId: id,
         name: name,
-        tokens: tokens || 25,
+        tokens: tokens || 10,
         streak: 0,
         convoHistory: [],
         convos: [],
@@ -219,7 +219,7 @@ export async function convertPDFToBase64(file) {
 };
 
 // Payment processing
-export async function payWithBankTrf(user, tokens = 25, amt = 1000) {
+export async function payWithBankTrf(user, tokens = 10, amt = 1000) {
     await connectDB(MONGODB_URI);
 
     // Create payment record
@@ -240,7 +240,7 @@ export async function payWithBankTrf(user, tokens = 25, amt = 1000) {
     return { success: true, paymentId: payment.payId, message: 'Payment completed successfully' };
 }
 
-export async function payWithCard(user, tokens = 25, amt = 1000) {
+export async function payWithCard(user, tokens = 10, amt = 1000) {
     await connectDB(MONGODB_URI);
 
     // Create payment record
@@ -276,7 +276,7 @@ Here are a few helpful commands for a smooth experience:
 /tokens - see how many tokens you have left.
 /payments - Top up your tokens.
 /conversations - View and continue previous conversations.
-/STEM - Answer math & science questions even better. [coming soon]
+/stem - Answer math & science questions even better. [coming soon]
 /research - Get help with your research/thesis/project. [coming soon]
 /feedback - Send feedback to the developers.
 /verify [reference number] - Verify your payment status.
