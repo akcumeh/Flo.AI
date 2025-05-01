@@ -1501,15 +1501,29 @@ export function setupWebhook(url) {
 
 export default async function handler(req, res) {
     try {
-        // Connect to database
-        await connectDB(process.env.MONGODB_URI);
-
         // Only allow POST requests for the webhook
         if (req.method !== 'POST') {
             if (req.method === 'GET') {
+                // Set the webhook URL on GET request
+                if (req.query.setwebhook === 'true') {
+                    const webhookUrl = `${process.env.WEBHOOK_URL}/api/telegram`;
+                    await bot.telegram.setWebhook(webhookUrl);
+                    return res.status(200).json({
+                        success: true,
+                        message: `Webhook set to ${webhookUrl}`
+                    });
+                }
                 return res.status(200).send('Telegram webhook is active');
             }
             return res.status(405).send('Method not allowed');
+        }
+
+        // Connect to MongoDB (with retry logic for serverless cold starts)
+        try {
+            await connectDB(process.env.MONGODB_URI);
+        } catch (dbError) {
+            console.error('Database connection error:', dbError);
+            // Still continue to process the update even if DB connection fails
         }
 
         // Process the update from Telegram
@@ -1519,9 +1533,11 @@ export default async function handler(req, res) {
         res.status(200).send('OK');
     } catch (error) {
         console.error('Error handling webhook:', error);
-        res.status(500).send('Internal Server Error');
+        // Always return 200 to Telegram to prevent retry attempts
+        res.status(200).send('Error processed');
     }
 }
+
 
 /* === Import the missing models === */
 

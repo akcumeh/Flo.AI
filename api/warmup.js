@@ -11,9 +11,9 @@ export default async function handler(req, res) {
         await connectDB(process.env.MONGODB_URI);
 
         // Return success
-        res.status(200).json({ status: 'warmed up' });
+        res.status(200).json({ status: 'warmed up', timestamp: new Date().toISOString() });
     } catch (error) {
         console.error('Warm-up error:', error);
-        res.status(500).json({ error: 'Warm-up failed' });
+        res.status(500).json({ error: 'Warm-up failed', message: error.message });
     }
 }

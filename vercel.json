@@ -8,12 +8,24 @@
   ],
   "routes": [
     {
-      "src": "/api/telegram/webhook",
-      "dest": "/api/telegram.js"
+      "src": "/api/telegram",
+      "dest": "/api/tg.js"
     },
     {
-      "src": "/api/whatsapp/webhook",
-      "dest": "/api/whatsapp.js"
+      "src": "/api/whatsapp",
+      "dest": "/api/wa.js"
+    },
+    {
+      "src": "/api/debug",
+      "dest": "/api/debug.js"
+    },
+    {
+      "src": "/api/setup",
+      "dest": "/api/setup.js"
+    },
+    {
+      "src": "/api/warmup",
+      "dest": "/api/warmup.js"
     },
     {
       "src": "/(.*)",
