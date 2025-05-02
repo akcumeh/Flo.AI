@@ -247,20 +247,43 @@ bot.command('transactions', async (ctx) => {
             return ctx.reply('You need to start the bot first. Please send /start.');
         }
 
-        const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 }).limit(5);
+        // Fetch all transactions for this user, sorted by date (newest first)
+        const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 });
 
         if (!transactions || transactions.length === 0) {
             return ctx.reply('You haven\'t made any transactions yet.');
         }
 
-        let message = 'Your recent transactions:\n\n';
+        let message = 'Transaction History with Florence*\n\n';
 
-        transactions.forEach((tx, index) => {
-            message += `${index + 1}. ${tx.amount} NGN for ${tx.tokens} tokens\n`;
-            message += `   Status: ${tx.status}\n`;
-            message += `   Date: ${tx.createdAt.toLocaleDateString()}\n`;
-            if (index < transactions.length - 1) message += '\n';
+        transactions.forEach((tx) => {
+            // Format the date nicely
+            const date = tx.createdAt.toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric'
+            });
+
+            const time = tx.createdAt.toLocaleTimeString('en-GB', {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+
+            // Add transaction details to message
+            message += `• ${date} ${time} | ${tx.reference} | ₦${tx.amount} | +${tx.tokens} tokens`;
+
+            // Add status for non-successful transactions
+            if (tx.status !== 'success') {
+                message += ` (${tx.status})`;
+            }
+
+            message += '\n';
         });
+
+        // If there are many transactions, warn the user
+        if (transactions.length > 20) {
+            message = `You have ${transactions.length} transactions. Here's your complete history:\n\n` + message;
+        }
 
         await ctx.reply(message);
     } catch (error) {

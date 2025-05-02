@@ -8,11 +8,11 @@
   ],
   "routes": [
     {
-      "src": "/api/telegram",
+      "src": "/api/tg",
       "dest": "/api/tg.js"
     },
     {
-      "src": "/api/whatsapp",
+      "src": "/api/wa",
       "dest": "/api/wa.js"
     },
     {

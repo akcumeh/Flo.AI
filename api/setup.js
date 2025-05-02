@@ -21,7 +21,7 @@ export default async function handler(req, res) {
         const bot = new Telegraf(process.env.BOT_TOKEN);
 
         // Set webhook
-        const webhookUrl = `${process.env.WEBHOOK_URL}/api/telegram`;
+        const webhookUrl = `${process.env.WEBHOOK_URL}/api/tg`;
         await bot.telegram.setWebhook(webhookUrl);
         console.log(`Webhook set to ${webhookUrl}`);
 
