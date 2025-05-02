@@ -679,9 +679,9 @@ bot.on(message('photo'), async (ctx) => {
             return;
         }
 
-        if(ctx.message.media_group_id) {
-            return await handleMediaGroupItem(ctx, user, 'photo');
-        }
+        // if(ctx.message.media_group_id) {
+            // return await handleMediaGroupItem(ctx, user, 'photo');
+        // }
 
         if (user.tokens < 2) {
             return ctx.reply('You don\'t have enough tokens for an image upload. Send /payments to top up.');
@@ -773,9 +773,9 @@ bot.on(message('document'), async (ctx) => {
             return;
         }
 
-        if (ctx.message.media_group_id) {
-            return await handleMediaGroupItem(ctx, user, 'document');
-        }
+        // if (ctx.message.media_group_id) {
+            // return await handleMediaGroupItem(ctx, user, 'document');
+        // }
 
         if (user.tokens < 2) {
             return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
