@@ -661,8 +661,6 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
 /* === Message Handlers === */
 
 bot.on(message('photo'), async (ctx) => {
-    
-
     try {
         const userId = prefix + ctx.from.id;
 
@@ -679,14 +677,12 @@ bot.on(message('photo'), async (ctx) => {
             return;
         }
 
-        if(ctx.message.media_group_id) {
-            return await handleMediaGroupItem(ctx, user, 'photo');
-        }
-
+        // Check tokens
         if (user.tokens < 2) {
             return ctx.reply('You don\'t have enough tokens for an image upload. Send /payments to top up.');
         }
 
+        // Get the largest photo from the array
         const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
         const caption = ctx.message.caption || "Assess the following image.";
 
@@ -704,6 +700,7 @@ bot.on(message('photo'), async (ctx) => {
         });
         await requestState.save();
 
+        // Send thinking message
         const thinkingMsg = await ctx.reply('Thinking...');
 
         // Deduct tokens
@@ -711,22 +708,21 @@ bot.on(message('photo'), async (ctx) => {
         await updateUser(userId, { tokens: user.tokens });
 
         try {
+            // Process image
+            console.log('Downloading image...');
             const imgBuffer = await downloadTelegramFile(bot, fileId);
+            console.log('Image downloaded, converting to base64...');
             let b64img = Buffer.from(imgBuffer).toString('base64');
-            const mimeType = 'image/jpeg';
+            console.log('Image converted, sending to Claude...');
+
+            // Process with Claude
+            let claudeAnswer = await askClaudeWithAtt(user, b64img, ['image', 'image/jpeg'], caption);
+            console.log('Received response from Claude, length:', claudeAnswer.length);
 
             // Check if request was cancelled
             const updatedRequest = await RequestState.findById(requestState._id);
             if (!updatedRequest || updatedRequest.status !== 'processing') {
-                return;
-            }
-
-            // Process with Claude
-            let claudeAnswer = await askClaudeWithAtt(user, b64img, ['image', mimeType], caption);
-
-            // Check again if cancelled
-            const finalRequest = await RequestState.findById(requestState._id);
-            if (!finalRequest || finalRequest.status !== 'processing') {
+                console.log('Request was cancelled');
                 return;
             }
 
@@ -734,14 +730,17 @@ bot.on(message('photo'), async (ctx) => {
             requestState.status = 'completed';
             await requestState.save();
 
-            // Send reply
+            // Send reply with added logging
+            console.log('Sending response to user...');
             await ctx.reply(claudeAnswer);
+            console.log('Response sent successfully');
         } catch (error) {
             console.error('Error processing image:', error);
 
             // Refund tokens on error
             user.tokens += 2;
             await updateUser(userId, { tokens: user.tokens });
+            console.log(`Refunded 2 tokens to user ${userId}`);
 
             // Update request status
             requestState.status = 'failed';
@@ -757,196 +756,190 @@ bot.on(message('photo'), async (ctx) => {
 });
 
 bot.on(message('document'), async (ctx) => {
-    try {
-        const userId = prefix + ctx.from.id;
+  try {
+    const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
-        let user = await getUser(userId);
+    await connectDB(process.env.MONGODB_URI);
+    let user = await getUser(userId);
 
-        if (!user) {
-            user = await addUser({
-                id: userId,
-                name: ctx.from.first_name,
-                tokens: 10
-            });
-            await ctx.reply(walkThru(user.tokens));
-            return;
-        }
-
-        if (ctx.message.media_group_id) {
-            return await handleMediaGroupItem(ctx, user, 'document');
-        }
-
-        if (user.tokens < 2) {
-            return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
-        }
-
-        const fileId = ctx.message.document.file_id;
-        const fileName = ctx.message.document.file_name || "document";
-        const mimeType = ctx.message.document.mime_type || "application/octet-stream";
-        const caption = ctx.message.caption || `Analyze this ${fileName} document.`;
-
-        // Create request in database
-        const requestState = new RequestState({
-            userId: userId,
-            tokenCost: 2,
-            messageId: ctx.message.message_id,
-            status: 'processing',
-            prompt: caption,
-            isMedia: true,
-            mediaType: 'document',
-            mediaFileId: fileId,
-            mediaMimeType: mimeType,
-            mediaFileName: fileName,
-            createdAt: new Date()
-        });
-        await requestState.save();
-
-        const thinkingMsg = await ctx.reply('Thinking...');
-
-        // Deduct tokens
-        user.tokens -= 2;
-        await updateUser(userId, { tokens: user.tokens });
-
-        try {
-            const fileBuffer = await downloadTelegramFile(bot, fileId);
-
-            // Check if request was cancelled
-            const updatedRequest = await RequestState.findById(requestState._id);
-            if (!updatedRequest || updatedRequest.status !== 'processing') {
-                return;
-            }
-
-            // Process with Claude
-            let claudeAnswer = await askClaudeWithAtt(
-                user,
-                fileBuffer.toString('base64'),
-                ['document', mimeType],
-                caption
-            );
-
-            // Check again if cancelled
-            const finalRequest = await RequestState.findById(requestState._id);
-            if (!finalRequest || finalRequest.status !== 'processing') {
-                return;
-            }
-
-            // Update request status
-            requestState.status = 'completed';
-            await requestState.save();
-
-            // Send reply
-            await ctx.reply(claudeAnswer);
-        } catch (error) {
-            console.error('Error processing document:', error);
-
-            // Refund tokens on error
-            user.tokens += 2;
-            await updateUser(userId, { tokens: user.tokens });
-
-            // Update request status
-            requestState.status = 'failed';
-            requestState.error = error.message;
-            await requestState.save();
-
-            await ctx.reply('Sorry, there was an error processing your document. Your tokens have been refunded.');
-        }
-    } catch (error) {
-        console.error('Error handling document:', error);
-        await ctx.reply('Sorry, something went wrong. Please try again.');
+    if (!user) {
+      user = await addUser({
+        id: userId,
+        name: ctx.from.first_name,
+        tokens: 10
+      });
+      await ctx.reply(walkThru(user.tokens));
+      return;
     }
+
+    // Check tokens
+    if (user.tokens < 2) {
+      return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
+    }
+
+    const fileId = ctx.message.document.file_id;
+    const fileName = ctx.message.document.file_name || "document";
+    const mimeType = ctx.message.document.mime_type || "application/octet-stream";
+    const caption = ctx.message.caption || `Analyze this ${fileName} document.`;
+
+    console.log(`Processing document: ${fileName}, MIME: ${mimeType}`);
+
+    // Create request in database
+    const requestState = new RequestState({
+      userId: userId,
+      tokenCost: 2,
+      messageId: ctx.message.message_id,
+      status: 'processing',
+      prompt: caption,
+      isMedia: true,
+      mediaType: 'document',
+      mediaFileId: fileId,
+      mediaMimeType: mimeType,
+      mediaFileName: fileName,
+      createdAt: new Date()
+    });
+    await requestState.save();
+
+    const thinkingMsg = await ctx.reply('Thinking...');
+
+    // Deduct tokens
+    user.tokens -= 2;
+    await updateUser(userId, { tokens: user.tokens });
+
+    try {
+      console.log('Downloading document...');
+      const fileBuffer = await downloadTelegramFile(bot, fileId);
+      console.log('Document downloaded, size:', fileBuffer.length);
+      
+      // Process with Claude
+      console.log('Sending document to Claude...');
+      let claudeAnswer = await askClaudeWithAtt(
+        user,
+        fileBuffer.toString('base64'),
+        ['document', mimeType],
+        caption
+      );
+      console.log('Received response from Claude, length:', claudeAnswer.length);
+
+      // Update request status
+      requestState.status = 'completed';
+      await requestState.save();
+
+      // Send reply
+      console.log('Sending response to user...');
+      await ctx.reply(claudeAnswer);
+      console.log('Response sent successfully');
+    } catch (error) {
+      console.error('Error processing document:', error);
+
+      // Refund tokens on error
+      user.tokens += 2;
+      await updateUser(userId, { tokens: user.tokens });
+      console.log(`Refunded 2 tokens to user ${userId}`);
+
+      // Update request status
+      requestState.status = 'failed';
+      requestState.error = error.message;
+      await requestState.save();
+
+      await ctx.reply('Sorry, there was an error processing your document. Your tokens have been refunded.');
+    }
+  } catch (error) {
+    console.error('Error handling document:', error);
+    await ctx.reply('Sorry, something went wrong. Please try again.');
+  }
 });
 
-bot.on('media_group_id', async (ctx) => {
-    try {
-        const userId = prefix + ctx.from.id;
+// bot.on('media_group_id', async (ctx) => {
+//     try {
+//         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
-        let user = await getUser(userId);
+//         await connectDB(process.env.MONGODB_URI);
+//         let user = await getUser(userId);
 
-        if (!user) {
-            user = await addUser({
-                id: userId,
-                name: ctx.from.first_name,
-                tokens: 10
-            });
-            await ctx.reply(walkThru(user.tokens));
-            return;
-        }
+//         if (!user) {
+//             user = await addUser({
+//                 id: userId,
+//                 name: ctx.from.first_name,
+//                 tokens: 10
+//             });
+//             await ctx.reply(walkThru(user.tokens));
+//             return;
+//         }
 
-        // Check if user has enough tokens (2 tokens for media processing)
-        if (user.tokens < 2) {
-            return ctx.reply('You don\'t have enough tokens for media uploads. Send /payments to top up.');
-        }
+//         // Check if user has enough tokens (2 tokens for media processing)
+//         if (user.tokens < 2) {
+//             return ctx.reply('You don\'t have enough tokens for media uploads. Send /payments to top up.');
+//         }
 
-        // Get or create media group
-        const mediaGroupId = ctx.message.media_group_id;
-        let mediaGroup = await MediaGroup.findOne({
-            userId: userId,
-            mediaGroupId: mediaGroupId,
-            status: 'collecting'
-        });
+//         // Get or create media group
+//         const mediaGroupId = ctx.message.media_group_id;
+//         let mediaGroup = await MediaGroup.findOne({
+//             userId: userId,
+//             mediaGroupId: mediaGroupId,
+//             status: 'collecting'
+//         });
 
-        if (!mediaGroup) {
-            mediaGroup = new MediaGroup({
-                userId,
-                mediaGroupId,
-                status: 'collecting',
-                caption: ctx.message.caption || '',
-                mediaItems: [],
-                tokenCost: 2,
-                expiresAt: new Date(Date.now() + 60000), // 1 minute expiry
-                lastActivity: new Date()
-            });
-        } else {
-            // Update last activity
-            mediaGroup.lastActivity = new Date();
-            // Update caption if present and not already set
-            if (ctx.message.caption && !mediaGroup.caption) {
-                mediaGroup.caption = ctx.message.caption;
-            }
-        }
+//         if (!mediaGroup) {
+//             mediaGroup = new MediaGroup({
+//                 userId,
+//                 mediaGroupId,
+//                 status: 'collecting',
+//                 caption: ctx.message.caption || '',
+//                 mediaItems: [],
+//                 tokenCost: 2,
+//                 expiresAt: new Date(Date.now() + 60000), // 1 minute expiry
+//                 lastActivity: new Date()
+//             });
+//         } else {
+//             // Update last activity
+//             mediaGroup.lastActivity = new Date();
+//             // Update caption if present and not already set
+//             if (ctx.message.caption && !mediaGroup.caption) {
+//                 mediaGroup.caption = ctx.message.caption;
+//             }
+//         }
 
-        // Add the media item
-        const mediaType = ctx.message.photo ? 'photo' : 'document';
-        const fileId = ctx.message.photo
-            ? ctx.message.photo[ctx.message.photo.length - 1].file_id
-            : ctx.message.document.file_id;
+//         // Add the media item
+//         const mediaType = ctx.message.photo ? 'photo' : 'document';
+//         const fileId = ctx.message.photo
+//             ? ctx.message.photo[ctx.message.photo.length - 1].file_id
+//             : ctx.message.document.file_id;
 
-        // Check if we already have this file (avoid duplicates)
-        const fileExists = mediaGroup.mediaItems.some(item => item.fileId === fileId);
-        if (!fileExists) {
-            mediaGroup.mediaItems.push({
-                fileId,
-                type: mediaType,
-                mimeType: ctx.message.document?.mime_type || 'image/jpeg',
-                fileName: ctx.message.document?.file_name || `photo_${mediaGroup.mediaItems.length + 1}.jpg`
-            });
-        }
+//         // Check if we already have this file (avoid duplicates)
+//         const fileExists = mediaGroup.mediaItems.some(item => item.fileId === fileId);
+//         if (!fileExists) {
+//             mediaGroup.mediaItems.push({
+//                 fileId,
+//                 type: mediaType,
+//                 mimeType: ctx.message.document?.mime_type || 'image/jpeg',
+//                 fileName: ctx.message.document?.file_name || `photo_${mediaGroup.mediaItems.length + 1}.jpg`
+//             });
+//         }
 
-        // Check if user is trying to send too many items (>5)
-        if (mediaGroup.mediaItems.length > 5) {
-            mediaGroup.status = 'cancelled';
-            await mediaGroup.save();
-            return ctx.reply('You can only send up to 5 items in a group. Please try again with fewer items.');
-        }
+//         // Check if user is trying to send too many items (>5)
+//         if (mediaGroup.mediaItems.length > 5) {
+//             mediaGroup.status = 'cancelled';
+//             await mediaGroup.save();
+//             return ctx.reply('You can only send up to 5 items in a group. Please try again with fewer items.');
+//         }
 
-        await mediaGroup.save();
+//         await mediaGroup.save();
 
-        // Start a timeout to process the group after a short delay (to collect all items)
-        setTimeout(async () => {
-            try {
-                await processMediaGroup(mediaGroupId, userId);
-            } catch (error) {
-                console.error('Error processing media group:', error);
-            }
-        }, 2000); // 2 seconds delay
+//         // Start a timeout to process the group after a short delay (to collect all items)
+//         setTimeout(async () => {
+//             try {
+//                 await processMediaGroup(mediaGroupId, userId);
+//             } catch (error) {
+//                 console.error('Error processing media group:', error);
+//             }
+//         }, 2000); // 2 seconds delay
 
-    } catch (error) {
-        console.error('Error handling media group:', error);
-        await ctx.reply('Sorry, something went wrong. Please try again.');
-    }
-});
+//     } catch (error) {
+//         console.error('Error handling media group:', error);
+//         await ctx.reply('Sorry, something went wrong. Please try again.');
+//     }
+// });
 
 bot.on('message', async (ctx) => {
     // Skip commands
