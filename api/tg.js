@@ -1148,8 +1148,6 @@ async function processPayment(ctx, user, state) {
             {
                 userId: user.userId,
                 email: state.email || user.email,
-                // Remove saveCard feature
-                saveCard: false
             },
             state.amount,
             callbackUrl
