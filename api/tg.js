@@ -678,6 +678,10 @@ bot.on(message('photo'), async (ctx) => {
         }
 
         // Check tokens
+        // if(ctx.message.media_group_id) {
+            // return await handleMediaGroupItem(ctx, user, 'photo');
+        // }
+
         if (user.tokens < 2) {
             return ctx.reply('You don\'t have enough tokens for an image upload. Send /payments to top up.');
         }
