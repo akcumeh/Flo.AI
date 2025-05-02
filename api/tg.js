@@ -857,97 +857,6 @@ bot.on(message('document'), async (ctx) => {
     }
 });
 
-bot.on('media_group', async (ctx) => {
-    try {
-        const userId = prefix + ctx.from.id;
-
-        await connectDB(process.env.MONGODB_URI);
-        let user = await getUser(userId);
-
-        if (!user) {
-            user = await addUser({
-                id: userId,
-                name: ctx.from.first_name,
-                tokens: 10
-            });
-            await ctx.reply(walkThru(user.tokens));
-            return;
-        }
-
-        // Check if user has enough tokens (2 tokens for media processing)
-        if (user.tokens < 2) {
-            return ctx.reply('You don\'t have enough tokens for media uploads. Send /payments to top up.');
-        }
-
-        // Get or create media group
-        const mediaGroupId = ctx.message.media_group_id;
-        let mediaGroup = await MediaGroup.findOne({
-            userId: userId,
-            mediaGroupId: mediaGroupId,
-            status: 'collecting'
-        });
-
-        if (!mediaGroup) {
-            mediaGroup = new MediaGroup({
-                userId,
-                mediaGroupId,
-                status: 'collecting',
-                caption: ctx.message.caption || '',
-                mediaItems: [],
-                tokenCost: 2,
-                expiresAt: new Date(Date.now() + 60000), // 1 minute expiry
-                lastActivity: new Date()
-            });
-        } else {
-            // Update last activity
-            mediaGroup.lastActivity = new Date();
-            // Update caption if present and not already set
-            if (ctx.message.caption && !mediaGroup.caption) {
-                mediaGroup.caption = ctx.message.caption;
-            }
-        }
-
-        // Add the media item
-        const mediaType = ctx.message.photo ? 'photo' : 'document';
-        const fileId = ctx.message.photo
-            ? ctx.message.photo[ctx.message.photo.length - 1].file_id
-            : ctx.message.document.file_id;
-
-        // Check if we already have this file (avoid duplicates)
-        const fileExists = mediaGroup.mediaItems.some(item => item.fileId === fileId);
-        if (!fileExists) {
-            mediaGroup.mediaItems.push({
-                fileId,
-                type: mediaType,
-                mimeType: ctx.message.document?.mime_type || 'image/jpeg',
-                fileName: ctx.message.document?.file_name || `photo_${mediaGroup.mediaItems.length + 1}.jpg`
-            });
-        }
-
-        // Check if user is trying to send too many items (>5)
-        if (mediaGroup.mediaItems.length > 5) {
-            mediaGroup.status = 'cancelled';
-            await mediaGroup.save();
-            return ctx.reply('You can only send up to 5 items in a group. Please try again with fewer items.');
-        }
-
-        await mediaGroup.save();
-
-        // Start a timeout to process the group after a short delay (to collect all items)
-        setTimeout(async () => {
-            try {
-                await processMediaGroup(mediaGroupId, userId);
-            } catch (error) {
-                console.error('Error processing media group:', error);
-            }
-        }, 2000); // 2 seconds delay
-
-    } catch (error) {
-        console.error('Error handling media group:', error);
-        await ctx.reply('Sorry, something went wrong. Please try again.');
-    }
-});
-
 bot.on('media_group_id', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
@@ -1406,8 +1315,21 @@ async function processMediaGroup(mediaGroupId, userId) {
                 mediaGroup.result = claudeAnswer;
                 await mediaGroup.save();
 
-                // Send the response
-                await bot.telegram.sendMessage(telegramId, claudeAnswer);
+                // Inside processMediaGroup function, modify the response sending:
+                console.log('Claude response:', claudeAnswer);
+                try {
+                    await bot.telegram.sendMessage(telegramId, claudeAnswer);
+                    console.log('Response sent successfully');
+                } catch (sendError) {
+                    console.error('Error sending response:', sendError);
+                    // Try sending a fallback message
+                    try {
+                        await bot.telegram.sendMessage(telegramId,
+                            'I analyzed your images but had trouble sending the full response. Please try again with a single image.');
+                    } catch (fallbackError) {
+                        console.error('Even fallback message failed:', fallbackError);
+                    }
+                }
 
             } catch (error) {
                 console.error('Error processing media group:', error);
@@ -1432,6 +1354,59 @@ async function processMediaGroup(mediaGroupId, userId) {
     } catch (error) {
         console.error('Error in processMediaGroup:', error);
     }
+}
+
+async function handleMediaGroupItem(ctx, user, mediaType) {
+    const userId = prefix + ctx.from.id;
+    const mediaGroupId = ctx.message.media_group_id;
+
+    // Find or create the media group
+    let mediaGroup = await MediaGroup.findOne({
+        userId,
+        mediaGroupId,
+        status: 'collecting'
+    });
+
+    if (!mediaGroup) {
+        mediaGroup = new MediaGroup({
+            userId,
+            mediaGroupId,
+            status: 'collecting',
+            caption: ctx.message.caption || '',
+            mediaItems: [],
+            tokenCost: 2,
+            expiresAt: new Date(Date.now() + 60000),
+            lastActivity: new Date()
+        });
+    } else {
+        mediaGroup.lastActivity = new Date();
+        if (ctx.message.caption && !mediaGroup.caption) {
+            mediaGroup.caption = ctx.message.caption;
+        }
+    }
+
+    // Add the media item without duplicates
+    const fileId = mediaType === 'photo'
+        ? ctx.message.photo[ctx.message.photo.length - 1].file_id
+        : ctx.message.document.file_id;
+
+    // Check for duplicates
+    if (!mediaGroup.mediaItems.some(item => item.fileId === fileId)) {
+        mediaGroup.mediaItems.push({
+            fileId,
+            type: mediaType,
+            mimeType: mediaType === 'document' ? ctx.message.document.mime_type : 'image/jpeg'
+        });
+    }
+
+    await mediaGroup.save();
+
+    // Process after a delay (only once)
+    if (mediaGroup.mediaItems.length === 1) {
+        setTimeout(() => processMediaGroup(mediaGroupId, userId), 2000);
+    }
+
+    return;
 }
 
 /* === API Endpoints === */
