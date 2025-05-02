@@ -5,7 +5,7 @@ import { Transaction } from '../models/transactions.js';
 
 dotenv.config();
 
-const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SK_LIVE;
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SK_TEST;
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 
 /**
