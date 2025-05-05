@@ -959,15 +959,14 @@ bot.on('message', async (ctx) => {
 
         await connectDB(process.env.MONGODB_URI);
 
-        // Check if we've already processed this message
+        // Add this improved check for duplicate processing
         const existingRequest = await RequestState.findOne({
             userId,
-            messageId,
-            status: 'processing'
+            messageId
         });
 
         if (existingRequest) {
-            console.log(`Message ${messageId} already being processed`);
+            console.log(`Message ${messageId} already being processed or processed`);
             return;
         }
 
@@ -1142,6 +1141,13 @@ async function handleRegularMessage(ctx, userId) {
         await updateUser(userId, { tokens: user.tokens });
 
         try {
+            // Add a check here to see if request was cancelled during the thinking delay
+            const updatedRequest = await RequestState.findById(requestState._id);
+            if (!updatedRequest || updatedRequest.status !== 'processing') {
+                console.log('Request was cancelled during thinking period');
+                return;
+            }
+            
             // Initialize convo history if needed
             if (!user.convoHistory) {
                 user.convoHistory = [];
@@ -1154,8 +1160,8 @@ async function handleRegularMessage(ctx, userId) {
             });
 
             // Check if request was cancelled
-            const updatedRequest = await RequestState.findById(requestState._id);
-            if (!updatedRequest || updatedRequest.status !== 'processing') {
+            const latestRequest = await RequestState.findById(requestState._id);
+            if (!latestRequest || latestRequest.status !== 'processing') {
                 return;
             }
 
