@@ -81,12 +81,10 @@ export async function tokenRefresh(user) {
 // Conversation Management
 export async function askClaude(user, prompt) {
     try {
-        // If this is a new conversation, add the user's prompt
-        if (user.convoHistory.length === 0) {
-            user.convoHistory.push({ role: "user", content: prompt });
-        }
+        // Don't add user prompt to convoHistory here - this is likely happening elsewhere
+        // and causing the duplication
 
-        let convo = user.convoHistory;
+        let convo = user.convoHistory || [];
 
         console.log('Sending request to Claude API...');
         const claude = await anthropic.messages.create({
@@ -99,13 +97,8 @@ export async function askClaude(user, prompt) {
         // Extract Claude's response
         let claudeAnswer = claude.content[0].text;
 
-        // Add Claude's response to conversation history
-        convo.push({ role: "assistant", content: claudeAnswer });
-
-        // Update user's conversation history
-        user.convoHistory = convo;
-        await updateUser(user.userId, { convoHistory: convo });
-
+        // IMPORTANT: Don't add the response to the conversation history here
+        // Just return the answer text and let the caller manage the conversation state
         return claudeAnswer;
     } catch (error) {
         console.error('Error calling Claude API:', error);
