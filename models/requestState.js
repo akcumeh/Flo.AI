@@ -25,6 +25,10 @@ const requestStateSchema = new mongoose.Schema({
     error: {
         type: String
     },
+    requestTime: {  // Add this field
+        type: Date,
+        default: Date.now
+    },
     createdAt: {
         type: Date,
         default: Date.now,

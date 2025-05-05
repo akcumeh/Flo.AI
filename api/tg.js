@@ -112,27 +112,28 @@ bot.command('cancel', async (ctx) => {
 
         await connectDB(process.env.MONGODB_URI);
 
-        // Check for regular requests
-        const requestState = await RequestState.findOne({
+        // Find all processing requests for this user
+        const requestStates = await RequestState.find({
             userId: userId,
             status: 'processing'
         });
 
-        if (requestState) {
-            requestState.status = 'cancelled';
-            await requestState.save();
+        // Cancel each request and refund tokens
+        for (const request of requestStates) {
+            request.status = 'cancelled';
+            await request.save();
 
+            // Refund tokens for each cancelled request
             const user = await getUser(userId);
             if (user) {
-                user.tokens += requestState.tokenCost || 1;
+                user.tokens += request.tokenCost || 1;
                 await updateUser(userId, { tokens: user.tokens });
+                cancelledSomething = true;
             }
-
-            cancelledSomething = true;
         }
 
-        // Check for media groups
-        const mediaGroup = await MediaGroup.findOne({
+        // Also check for media groups
+        const mediaGroups = await MediaGroup.find({
             userId: userId,
             $or: [
                 { status: 'collecting' },
@@ -140,8 +141,7 @@ bot.command('cancel', async (ctx) => {
             ]
         });
 
-        if (mediaGroup) {
-            // Only refund tokens if we were processing (not collecting)
+        for (const mediaGroup of mediaGroups) {
             if (mediaGroup.status === 'processing') {
                 const user = await getUser(userId);
                 if (user) {
@@ -152,12 +152,11 @@ bot.command('cancel', async (ctx) => {
 
             mediaGroup.status = 'cancelled';
             await mediaGroup.save();
-
             cancelledSomething = true;
         }
 
         if (cancelledSomething) {
-            await ctx.reply('Request cancelled. Your tokens have been refunded if they were already deducted.');
+            await ctx.reply('Request cancelled. Your tokens have been refunded.');
         } else {
             await ctx.reply('No ongoing requests to cancel.');
         }
@@ -1103,12 +1102,33 @@ async function processPayment(ctx, user, state) {
 
 async function handleRegularMessage(ctx, userId) {
     try {
-        // Add a check for request cancellation
-        const updatedRequest = await RequestState.findById(RequestState._id);
-        if (!updatedRequest || updatedRequest.status !== 'processing') {
-            console.log('Request was cancelled during thinking period');
-            return;
+        let user = await getUser(userId);
+
+        if (!user) {
+            return ctx.reply('You need to start the bot first. Please send /start.');
         }
+
+        // Create the request state FIRST
+        const requestState = new RequestState({
+            userId,
+            tokenCost: 1,
+            messageId: ctx.message.message_id,
+            status: 'processing',
+            prompt: ctx.message.text,
+            createdAt: new Date()
+        });
+        await requestState.save();
+
+        // Deduct tokens
+        if (user.tokens < 1) {
+            return ctx.reply('You don\'t have enough tokens. Send /payments to top up.');
+        }
+
+        user.tokens -= 1;
+        await updateUser(userId, { tokens: user.tokens });
+
+        // Send thinking message
+        const thinkingMsg = await ctx.reply('Thinking...');
 
         // Make sure user has convoHistory array
         if (!user.convoHistory) {
@@ -1121,36 +1141,53 @@ async function handleRegularMessage(ctx, userId) {
             content: ctx.message.text
         });
 
-        // Check if request was cancelled
-        const latestRequest = await RequestState.findById(requestState._id);
-        if (!latestRequest || latestRequest.status !== 'processing') {
-            return;
+        try {
+            // Check if request was cancelled USING THE SPECIFIC REQUEST ID
+            const latestRequest = await RequestState.findById(requestState._id);
+            if (!latestRequest || latestRequest.status !== 'processing') {
+                console.log('Request was cancelled during thinking period');
+                return;
+            }
+
+            // Get Claude response
+            let claudeAnswer = await askClaude(user, ctx.message.text);
+
+            // Check again if cancelled
+            const finalRequest = await RequestState.findById(requestState._id);
+            if (!finalRequest || finalRequest.status !== 'processing') {
+                console.log('Request was cancelled before response could be sent');
+                return;
+            }
+
+            // Add Claude's response to conversation
+            user.convoHistory.push({
+                role: "assistant",
+                content: claudeAnswer
+            });
+
+            // Update user in database
+            await updateUser(userId, { convoHistory: user.convoHistory });
+
+            // Update request status
+            requestState.status = 'completed';
+            await requestState.save();
+
+            // Send reply
+            await ctx.reply(claudeAnswer);
+        } catch (error) {
+            console.error('Error processing message:', error);
+
+            // Refund tokens on error
+            user.tokens += 1;
+            await updateUser(userId, { tokens: user.tokens });
+
+            // Update request status
+            requestState.status = 'failed';
+            requestState.error = error.message;
+            await requestState.save();
+
+            await ctx.reply('Sorry, something went wrong. Your token has been refunded.');
         }
-
-        // Get Claude response (don't modify conversation history inside this function)
-        let claudeAnswer = await askClaude(user, ctx.message.text);
-
-        // Check again if cancelled
-        const finalRequest = await RequestState.findById(requestState._id);
-        if (!finalRequest || finalRequest.status !== 'processing') {
-            return;
-        }
-
-        // Add Claude's response to conversation only once, here
-        user.convoHistory.push({
-            role: "assistant",
-            content: claudeAnswer
-        });
-
-        // Update user in database with the modified conversation history
-        await updateUser(userId, { convoHistory: user.convoHistory });
-
-        // Update request status
-        requestState.status = 'completed';
-        await requestState.save();
-
-        // Send reply
-        await ctx.reply(claudeAnswer);
     } catch (error) {
         console.error('Error in handleRegularMessage:', error);
         throw error;
