@@ -263,17 +263,24 @@ export async function payWithCard(user, tokens = 10, amt = 1000) {
 
 // Welcome messages
 export function walkThru(tokens) {
-    return `Hello there! Welcome to Florence*.
+    return `Hello there! Welcome to Florence*, the educational assistant at your fingertips.
+
+Florence* is here to help you with your studies, research, and any questions you may have. You can ask anything from math and science to finance, history and literature. Just type your question, send a picture or a document, and you'll be provided a detailed answer within 3-30 seconds.
 
 Interacting with Florence* costs you tokens*. Every now and then you'll get these, but you can also purchase more of them at any time.
 
-You currently have ${tokens} tokens*. Feel free to send your text (one token*), images (two tokens*), or documents (two tokens*) and get answers immediately.
+Text-only - 1 token
+Image - 2 tokens
+Document - 2 tokens
+
+You currently have ${tokens} tokens*.
+
 
 Here are a few helpful commands for a smooth experience:
 
 /start - Florence* is now listening to you. This also starts a NEW conversation thread.
 /about - Learn more about Florence*.
-/tokens - see how many tokens you have left.
+/tokens - See how many tokens you have left.
 /payments - Top up your tokens.
 /conversations - View and continue previous conversations.
 /stem - Answer math & science questions even better. [coming soon]

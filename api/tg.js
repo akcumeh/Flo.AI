@@ -3,8 +3,8 @@ import { message } from 'telegraf/filters';
 import { connectDB } from '../db/db.js';
 import express from 'express';
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 import crypto from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
 import {
@@ -14,6 +14,10 @@ import { downloadTelegramFile } from '../utils/getMsgContent.js';
 import { Transaction } from '../models/transactions.js';
 import VerificationState from '../models/verificationState.js';
 import { initializeCardPayment, initializeBankTransfer, verifyTransaction } from '../utils/paystack.js';
+
+import { Transaction } from '../models/transactions.js';
+import VerificationState from '../models/verificationState.js';
+import { RequestState, MediaGroup } from '../models/serverless.js'; // Import from serverless.js
 
 dotenv.config();
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -947,14 +951,25 @@ bot.on(message('document'), async (ctx) => {
 
 bot.on('message', async (ctx) => {
     // Skip commands
-    if (ctx.message.text && ctx.message.text.startsWith('/')) {
-        return;
-    }
+    if (ctx.message.text?.startsWith('/')) return;
 
     try {
         const userId = prefix + ctx.from.id;
+        const messageId = ctx.message.message_id;
 
         await connectDB(process.env.MONGODB_URI);
+
+        // Check if we've already processed this message
+        const existingRequest = await RequestState.findOne({
+            userId,
+            messageId,
+            status: 'processing'
+        });
+
+        if (existingRequest) {
+            console.log(`Message ${messageId} already being processed`);
+            return;
+        }
 
         // Check if this is a payment flow message
         const paymentState = await PaymentState.findOne({ userId });
@@ -1533,9 +1548,6 @@ export default async function handler(req, res) {
 
 
 /* === Import the missing models === */
-
-// Define RequestState and MediaGroup models
-import mongoose from 'mongoose';
 
 // If you haven't created these models yet, add them here
 const requestStateSchema = new mongoose.Schema({

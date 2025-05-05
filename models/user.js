@@ -1,5 +1,4 @@
 import mongoose from 'mongoose';
-import { message } from 'telegraf/filters';
 
 const userSchema = new mongoose.Schema({
     userId: {
