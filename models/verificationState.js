@@ -8,7 +8,7 @@ const verificationStateSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['awaiting_reference'],
+        enum: ['awaiting_reference', 'processing'],
         default: 'awaiting_reference'
     },
     createdAt: {
