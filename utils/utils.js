@@ -7,7 +7,7 @@ import { connectDB } from '../db/db.js';
 
 dotenv.config();
 
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/claude-bot';
 
 // Initialize Anthropic client
 let anthropic = new Anthropic({
@@ -48,7 +48,7 @@ export async function updateUser(id, updates) {
     );
 }
 
-// Token Management
+// Token ManagemenT
 export async function addTokens({ id, amt }) {
     await connectDB(MONGODB_URI);
 
