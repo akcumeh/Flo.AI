@@ -158,92 +158,104 @@ export async function verifyTransaction(reference) {
             console.error('No reference provided for verification');
             return {
                 success: false,
-                message: 'Transaction reference is missing'
+                message: 'Please provide a valid reference number.'
             };
         }
 
         const cleanReference = reference.replace(/[^a-zA-Z0-9-]/g, '');
         console.log(`Verifying transaction with reference: ${cleanReference}`);
 
-        // For bank transfers, we'll verify directly from our database
-        // since we don't integrate with Paystack's verification for manual transfers
-        if (cleanReference.includes('FLO-BANK')) {
-            const transaction = await Transaction.findOne({ reference: cleanReference });
-
-            if (!transaction) {
-                console.error('Bank transaction not found in database:', cleanReference);
-                return {
-                    success: false,
-                    message: 'Transaction not found in our records'
-                };
-            }
-
-            // For a real implementation, you would manually verify bank transfers
-            // Here we're just checking if it exists in the database
-            return {
-                success: true,
-                message: 'Bank transfer verification pending. We will manually verify your payment.',
-                amount: transaction.amount,
-                tokens: transaction.tokens,
-                userId: transaction.userId,
-                status: 'pending_manual_verification'
-            };
-        }
-
-        // For card payments, verify with Paystack API
         const transaction = await Transaction.findOne({ reference: cleanReference });
 
         if (!transaction) {
             console.error('Transaction not found in database:', cleanReference);
             return {
                 success: false,
-                message: 'Transaction not found in our records'
+                message: 'Transaction not found. Please check your reference number.'
             };
         }
 
-        if (!PAYSTACK_SECRET_KEY) {
-            console.warn('Paystack API key not configured, skipping verification');
-            // For testing without Paystack API, simulate a successful response
-            transaction.status = 'success';
-            transaction.completedAt = new Date();
+        // Check if transaction has expired
+        if (transaction.hasExpired() && transaction.status === 'pending') {
+            transaction.status = 'failed';
             await transaction.save();
+            return {
+                success: false,
+                message: 'This payment link has expired. Please initiate a new payment.'
+            };
+        }
 
+        if (cleanReference.includes('FLO-BANK')) {
+            return {
+                success: false,
+                message: 'Bank transfer payments require manual verification. We will confirm your payment within 24 hours.',
+                isPending: true
+            };
+        }
+
+        if (transaction.status === 'success') {
             return {
                 success: true,
-                message: 'Payment verified successfully (test mode)',
+                message: 'Payment verified successfully',
                 amount: transaction.amount,
                 tokens: transaction.tokens,
                 userId: transaction.userId
             };
         }
 
-        // Actual Paystack verification
-        const response = await paystackRequest(`/transaction/verify/${cleanReference}`);
-
-        if (response.status && response.data.status === 'success') {
-            transaction.status = 'success';
-            transaction.completedAt = new Date();
-            transaction.gatewayResponse = response.data;
-            await transaction.save();
-
-            return {
-                success: true,
-                message: 'Payment verified successfully',
-                amount: response.data.amount / 100, // Convert back to Naira
-                tokens: transaction.tokens,
-                userId: transaction.userId
-            };
-        } else {
+        // Check if payment was marked as failed
+        if (transaction.status === 'failed') {
             return {
                 success: false,
-                message: response.message || 'Transaction verification failed with Paystack'
+                message: 'This payment was not completed. Please try making a new payment.'
+            };
+        }
+
+        if (PAYSTACK_SECRET_KEY) {
+            try {
+                const response = await paystackRequest(`/transaction/verify/${cleanReference}`);
+
+                if (response.status && response.data.status === 'success') {
+                    // Update transaction status
+                    transaction.status = 'success';
+                    transaction.completedAt = new Date();
+                    transaction.gatewayResponse = response.data;
+                    await transaction.save();
+
+                    return {
+                        success: true,
+                        message: 'Payment verified successfully',
+                        amount: response.data.amount / 100,
+                        tokens: transaction.tokens,
+                        userId: transaction.userId
+                    };
+                } else {
+                    // Payment not successful on Paystack
+                    return {
+                        success: false,
+                        message: 'Payment not yet received. If you just made the payment, please wait a few minutes and try again.'
+                    };
+                }
+            } catch (apiError) {
+                console.error('Paystack API error:', apiError);
+                return {
+                    success: false,
+                    message: 'Unable to verify payment at this time. Please try again in a few minutes.'
+                };
+            }
+        } else {
+            // Test mode without Paystack API
+            console.warn('Paystack API key not configured, using test mode');
+            return {
+                success: false,
+                message: 'Payment verification is in test mode. Please contact support.'
             };
         }
     } catch (error) {
         console.error('Transaction verification error:', error);
         return {
             success: false,
-            message: 'An error occurred while verifying transaction'
+            message: 'An error occurred while verifying your payment. Please try again later.'
         };
     }
 }

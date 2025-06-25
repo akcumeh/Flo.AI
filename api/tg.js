@@ -975,10 +975,10 @@ async function performVerification(ctx, user, reference, processingMsg) {
             }
 
             await ctx.reply(
-                `❌ This payment reference has already been verified.\n\n` +
-                `Reference: ${cleanReference}\n` +
-                `Tokens were already added to your account.\n\n` +
-                `Your current balance: ${user.tokens} tokens`
+                `⚠️ Already Verified\n\n` +
+                `This payment reference has already been used.\n` +
+                `The tokens were previously added to your account.\n\n` +
+                `Current balance: ${user.tokens} tokens`
             );
             return { success: false };
         }
@@ -1009,27 +1009,46 @@ async function performVerification(ctx, user, reference, processingMsg) {
             });
 
             await ctx.reply(
-                `✅ Payment verified successfully!\n\n` +
-                `${verificationResult.tokens} tokens have been added to your account.\n\n` +
-                `You now have ${newTokens} tokens.`
+                `✅ Payment Verified!\n\n` +
+                `Added: ${verificationResult.tokens} tokens\n` +
+                `New balance: ${newTokens} tokens\n\n` +
+                `Thank you for your payment!`
             );
 
             // Clean up payment state
             await PaymentState.deleteOne({ userId: user.userId });
 
             return { success: true };
-        } else {
+        } else if (verificationResult.isPending) {
+            // Special case for bank transfers
             await ctx.reply(
-                `❌ Payment verification failed.\n\n` +
-                `Reference: ${cleanReference}\n` +
-                `Reason: ${verificationResult.message || 'Unknown error'}\n\n` +
-                `If you just completed the payment, please wait a few minutes and try again.`
+                `🏦 Bank Transfer\n\n` +
+                `${verificationResult.message}`
+            );
+            return { success: false };
+        } else {
+            // All other failure cases
+            await ctx.reply(
+                `❌ Verification Failed\n\n` +
+                `${verificationResult.message}`
             );
             return { success: false };
         }
     } catch (error) {
         console.error('Error in performVerification:', error);
-        await ctx.reply('An error occurred while verifying your payment. Please try again later.');
+
+        // Delete processing message if it exists
+        if (processingMsg && processingMsg.message_id) {
+            try {
+                await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+            } catch (e) { }
+        }
+
+        await ctx.reply(
+            `❌ Error\n\n` +
+            `Unable to verify payment at this time.\n` +
+            `Please try again later or contact support.`
+        );
         return { success: false };
     }
 }
