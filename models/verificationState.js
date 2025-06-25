@@ -6,17 +6,31 @@ const verificationStateSchema = new mongoose.Schema({
         required: true,
         index: true
     },
+    reference: {
+        type: String,
+        required: true,
+        index: true
+    },
     status: {
         type: String,
-        enum: ['awaiting_reference'],
-        default: 'awaiting_reference'
+        enum: ['verified', 'failed'],
+        default: 'verified'
+    },
+    tokens: {
+        type: Number,
+        required: true
+    },
+    verifiedAt: {
+        type: Date,
+        default: Date.now
     },
     createdAt: {
         type: Date,
-        default: Date.now,
-        expires: 600 // Auto-delete after 10 minutes
+        default: Date.now
     }
 });
+
+verificationStateSchema.index({ userId: 1, reference: 1 }, { unique: true });
 
 const VerificationState = mongoose.models.VerificationState ||
     mongoose.model('VerificationState', verificationStateSchema);

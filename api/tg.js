@@ -303,50 +303,16 @@ bot.command('verify', async (ctx) => {
 
         const parts = ctx.message.text.split(' ');
 
-        // If reference is provided with the command
-        if (parts.length >= 2) {
-            const reference = parts[1].trim();
-            const verifyMsg = await ctx.reply('Verifying your payment...');
-            console.log(`User ${userId} is verifying payment with reference: ${reference}`);
-
-            const verificationResult = await verifyTransaction(reference);
-            console.log('Verification result:', verificationResult);
-
-            if (verificationResult.success) {
-                const newTokens = user.tokens + verificationResult.tokens;
-                await updateUser(userId, { tokens: newTokens });
-
-                await ctx.reply(
-                    `Payment verified successfully! ✅\n\n` +
-                    `${verificationResult.tokens} tokens have been added to your account.\n\n` +
-                    `You now have ${newTokens} tokens.`
-                );
-
-                // Clean up payment state
-                await PaymentState.deleteOne({ userId });
-            } else {
-                await ctx.reply(`Payment verification failed: ${verificationResult.message}`);
-            }
+        // Only allow /verify with reference - no two-step process
+        if (parts.length < 2) {
+            return ctx.reply('Please provide a reference number. Usage: /verify [reference]');
         }
-        // If no reference provided, start the two-step verification process
-        else {
-            // Create or update verification state
-            await VerificationState.findOneAndUpdate(
-                { userId },
-                { status: 'awaiting_reference', createdAt: new Date() },
-                { upsert: true }
-            );
 
-            await ctx.reply(
-                'Please enter the payment reference number to verify:',
-                {
-                    reply_markup: {
-                        force_reply: true,
-                        selective: true
-                    }
-                }
-            );
-        }
+        const reference = parts.slice(1).join(' ').trim();
+        const verifyMsg = await ctx.reply('Verifying your payment...');
+
+        await performVerification(ctx, user, reference, verifyMsg);
+
     } catch (error) {
         console.error('Error in verify command:', error);
         await ctx.reply('Sorry, something went wrong with payment verification. Please try again or contact support.');
@@ -555,101 +521,24 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
         }
 
         const reference = ctx.match[1];
-        console.log(`Verification requested for reference: ${reference}`);
 
-        // Answer the callback query with a loading message
+        // Answer the callback query
         await ctx.answerCbQuery('Verifying your payment...', false);
 
         // Show a processing message
         const processingMsg = await ctx.reply('Verifying your payment...');
 
-        try {
-            // Verify the transaction
-            const verificationResult = await verifyTransaction(reference);
-            console.log('Verification result:', JSON.stringify(verificationResult));
+        const result = await performVerification(ctx, user, reference, processingMsg);
 
-            if (verificationResult && verificationResult.success) {
-                // For bank transfers that need manual verification
-                if (verificationResult.status === 'pending_manual_verification') {
-                    // Delete the processing message
-                    try {
-                        await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
-                    } catch (deleteError) {
-                        console.log('Could not delete message:', deleteError.message);
-                    }
-
-                    await ctx.reply(
-                        `Your bank transfer is being processed.\n\n` +
-                        `Reference: ${reference}\n\n` +
-                        `We will manually verify your payment and add ${verificationResult.tokens} tokens to your account soon. This usually takes less than 24 hours.`
-                    );
-
-                    // Clean up payment state
-                    await PaymentState.deleteOne({ userId });
-
-                    // Edit the original message to remove the verify button
-                    try {
-                        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-                    } catch (editError) {
-                        console.log('Could not edit original message:', editError.message);
-                    }
-
-                    return;
-                }
-
-                // For successful verifications (typically card payments)
-                const newTokens = user.tokens + verificationResult.tokens;
-                await updateUser(userId, { tokens: newTokens });
-
-                // Delete the processing message and send success message
-                try {
-                    await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
-                } catch (deleteError) {
-                    console.log('Could not delete message:', deleteError.message);
-                }
-
-                await ctx.reply(
-                    `Payment verified successfully! ✅\n\n` +
-                    `${verificationResult.tokens} tokens have been added to your account.\n\n` +
-                    `You now have ${newTokens} tokens.`
-                );
-
-                // Clean up payment state
-                await PaymentState.deleteOne({ userId });
-
-                // Edit the original message to remove the verify button
-                try {
-                    await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-                } catch (editError) {
-                    console.log('Could not edit original message:', editError.message);
-                }
-            } else {
-                // Delete the processing message and send failure message
-                try {
-                    await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
-                } catch (deleteError) {
-                    console.log('Could not delete message:', deleteError.message);
-                }
-
-                const errorMessage = verificationResult?.message || 'Transaction verification failed';
-
-                await ctx.reply(
-                    `Payment verification failed: ${errorMessage}\n\n` +
-                    `If you just completed the payment, please wait a few minutes and try again.`
-                );
-            }
-        } catch (verifyError) {
-            console.error('Error in verification process:', verifyError);
-
-            // Clean up processing message
+        // If verification was successful, remove the verify button
+        if (result && result.success) {
             try {
-                await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
-            } catch (deleteError) {
-                console.log('Could not delete message:', deleteError.message);
+                await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+            } catch (editError) {
+                console.log('Could not edit original message:', editError.message);
             }
-
-            await ctx.reply('An error occurred while verifying your payment. Please try again later or contact support.');
         }
+
     } catch (error) {
         console.error('Error in verify payment button handler:', error);
         await ctx.answerCbQuery('An error occurred while verifying payment', true);
@@ -973,43 +862,6 @@ bot.on('message', async (ctx) => {
             return;
         }
 
-        if (ctx.message.text && !ctx.message.text.startsWith('/')) {
-            // Check if user is in verification state
-            const verificationState = await VerificationState.findOne({ userId });
-
-            if (verificationState && verificationState.status === 'awaiting_reference') {
-                // Process the reference number
-                const reference = ctx.message.text.trim();
-
-                // Delete the verification state
-                await VerificationState.deleteOne({ userId });
-
-                const verifyMsg = await ctx.reply('Verifying your payment...');
-                console.log(`User ${userId} is verifying payment with reference: ${reference}`);
-
-                const verificationResult = await verifyTransaction(reference);
-                console.log('Verification result:', verificationResult);
-
-                if (verificationResult.success) {
-                    const newTokens = userId.tokens + verificationResult.tokens;
-                    await updateUser(userId, { tokens: newTokens });
-
-                    await ctx.reply(
-                        `Payment verified successfully! ✅\n\n` +
-                        `${verificationResult.tokens} tokens have been added to your account.\n\n` +
-                        `You now have ${newTokens} tokens.`
-                    );
-
-                    // Clean up payment state
-                    await PaymentState.deleteOne({ userId });
-                } else {
-                    await ctx.reply(`Payment verification failed: ${verificationResult.message}`);
-                }
-
-                return; // Exit handler since we've handled the verification
-            }
-        }
-
         // Handle regular message
         await handleRegularMessage(ctx, userId);
     } catch (error) {
@@ -1035,7 +887,7 @@ async function handlePaymentMessage(ctx, userId, state) {
                 return ctx.reply('Please enter a valid email address.');
             }
 
-            // Save email to user profile
+            // Save email to user profile - NO API CALL, just database update
             await updateUser(userId, { email: email });
 
             // Update payment state
@@ -1097,6 +949,88 @@ async function processPayment(ctx, user, state) {
     } catch (error) {
         console.error('Error processing payment:', error);
         await ctx.reply('Sorry, something went wrong with the payment process. Please try again.');
+    }
+}
+
+async function performVerification(ctx, user, reference, processingMsg) {
+    try {
+        console.log(`User ${user.userId} is verifying payment with reference: ${reference}`);
+
+        // Clean the reference
+        const cleanReference = reference.replace(/[^a-zA-Z0-9-]/g, '');
+
+        // Check if this reference has already been verified
+        const existingVerification = await VerificationState.findOne({
+            userId: user.userId,
+            reference: cleanReference,
+            status: 'verified'
+        });
+
+        if (existingVerification) {
+            // Delete processing message if it exists
+            if (processingMsg && processingMsg.message_id) {
+                try {
+                    await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+                } catch (e) { }
+            }
+
+            await ctx.reply(
+                `❌ This payment reference has already been verified.\n\n` +
+                `Reference: ${cleanReference}\n` +
+                `Tokens were already added to your account.\n\n` +
+                `Your current balance: ${user.tokens} tokens`
+            );
+            return { success: false };
+        }
+
+        // Verify with Paystack
+        const verificationResult = await verifyTransaction(cleanReference);
+        console.log('Verification result:', verificationResult);
+
+        // Delete processing message if it exists
+        if (processingMsg && processingMsg.message_id) {
+            try {
+                await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+            } catch (e) { }
+        }
+
+        if (verificationResult.success) {
+            // Add tokens to user
+            const newTokens = user.tokens + verificationResult.tokens;
+            await updateUser(user.userId, { tokens: newTokens });
+
+            // Mark as verified in VerificationState
+            await VerificationState.create({
+                userId: user.userId,
+                reference: cleanReference,
+                status: 'verified',
+                tokens: verificationResult.tokens,
+                verifiedAt: new Date()
+            });
+
+            await ctx.reply(
+                `✅ Payment verified successfully!\n\n` +
+                `${verificationResult.tokens} tokens have been added to your account.\n\n` +
+                `You now have ${newTokens} tokens.`
+            );
+
+            // Clean up payment state
+            await PaymentState.deleteOne({ userId: user.userId });
+
+            return { success: true };
+        } else {
+            await ctx.reply(
+                `❌ Payment verification failed.\n\n` +
+                `Reference: ${cleanReference}\n` +
+                `Reason: ${verificationResult.message || 'Unknown error'}\n\n` +
+                `If you just completed the payment, please wait a few minutes and try again.`
+            );
+            return { success: false };
+        }
+    } catch (error) {
+        console.error('Error in performVerification:', error);
+        await ctx.reply('An error occurred while verifying your payment. Please try again later.');
+        return { success: false };
     }
 }
 

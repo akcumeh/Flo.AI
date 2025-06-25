@@ -1,5 +1,3 @@
-// models/transactions.js
-
 import mongoose from 'mongoose';
 
 const transactionSchema = new mongoose.Schema({
@@ -11,7 +9,8 @@ const transactionSchema = new mongoose.Schema({
     reference: {
         type: String,
         required: true,
-        unique: true
+        unique: true,
+        index: true
     },
     amount: {
         type: Number,
@@ -44,9 +43,24 @@ const transactionSchema = new mongoose.Schema({
         type: Date,
         default: Date.now
     },
+    expiresAt: {
+        type: Date,
+        default: function () {
+            return new Date(Date.now() + 3600000); // 1 hour from creation
+        }
+    },
     completedAt: {
         type: Date
     }
 });
+
+// Add index for efficient queries
+transactionSchema.index({ status: 1 });
+transactionSchema.index({ expiresAt: 1 });
+
+// Method to check if transaction has expired
+transactionSchema.methods.hasExpired = function () {
+    return new Date() > this.expiresAt;
+};
 
 export const Transaction = mongoose.model('Transaction', transactionSchema);
