@@ -14,6 +14,7 @@ import { downloadTelegramFile } from '../utils/getMsgContent.js';
 import { Transaction } from '../models/transactions.js';
 import VerificationState from '../models/verificationState.js';
 import { initializeCardPayment, initializeBankTransfer, verifyTransaction } from '../utils/paystack.js';
+import { updateUserStreak, checkStreakReward, getUserStreakInfo } from '../utils/streakManager.js';
 
 dotenv.config();
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -183,6 +184,25 @@ bot.command('tokens', async (ctx) => {
         await ctx.reply(`You have ${user.tokens} tokens. To top up, send /payments.`);
     } catch (error) {
         console.error('Error in /tokens command:', error);
+        await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+});
+
+bot.command('streak', async (ctx) => {
+    try {
+        const userId = prefix + ctx.from.id;
+        const streakInfo = await getUserStreakInfo(userId);
+
+        if (!streakInfo) {
+            return ctx.reply('You need to start the bot first. Please send /start.');
+        }
+
+        const firstName = streakInfo.name.split(' ')[0];
+        const message = `Hi ${firstName}, you have a streak of ${streakInfo.streak} days. Keep learning with Florence*!`;
+
+        await ctx.reply(message);
+    } catch (error) {
+        console.error('Error in /streak command:', error);
         await ctx.reply('Sorry, something went wrong. Please try again.');
     }
 });
@@ -565,11 +585,10 @@ bot.on(message('photo'), async (ctx) => {
             return;
         }
 
-        // Check tokens
-        // if(ctx.message.media_group_id) {
-            // return await handleMediaGroupItem(ctx, user, 'photo');
-        // }
+        // Update streak for image uploads too
+        const streakResult = await updateUserStreak(userId);
 
+        // Check tokens
         if (user.tokens < 2) {
             return ctx.reply('You don\'t have enough tokens for an image upload. Send /payments to top up.');
         }
@@ -641,6 +660,12 @@ bot.on(message('photo'), async (ctx) => {
 
             await ctx.reply('Sorry, there was an error processing your image. Your tokens have been refunded.');
         }
+
+        if (streakResult && streakResult.streakIncreased) {
+            setTimeout(async () => {
+                await checkStreakReward(userId);
+            }, 1000);
+        }
     } catch (error) {
         console.error('Error handling photo:', error);
         await ctx.reply('Sorry, something went wrong. Please try again.');
@@ -648,98 +673,107 @@ bot.on(message('photo'), async (ctx) => {
 });
 
 bot.on(message('document'), async (ctx) => {
-  try {
-    const userId = prefix + ctx.from.id;
-
-    await connectDB(process.env.MONGODB_URI);
-    let user = await getUser(userId);
-
-    if (!user) {
-      user = await addUser({
-        id: userId,
-        name: ctx.from.first_name,
-        tokens: 10
-      });
-      await ctx.reply(walkThru(user.tokens));
-      return;
-    }
-
-    // Check tokens
-    if (user.tokens < 2) {
-      return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
-    }
-
-    const fileId = ctx.message.document.file_id;
-    const fileName = ctx.message.document.file_name || "document";
-    const mimeType = ctx.message.document.mime_type || "application/octet-stream";
-    const caption = ctx.message.caption || `Analyze this ${fileName} document.`;
-
-    console.log(`Processing document: ${fileName}, MIME: ${mimeType}`);
-
-    // Create request in database
-    const requestState = new RequestState({
-      userId: userId,
-      tokenCost: 2,
-      messageId: ctx.message.message_id,
-      status: 'processing',
-      prompt: caption,
-      isMedia: true,
-      mediaType: 'document',
-      mediaFileId: fileId,
-      mediaMimeType: mimeType,
-      mediaFileName: fileName,
-      createdAt: new Date()
-    });
-    await requestState.save();
-
-    const thinkingMsg = await ctx.reply('Thinking...');
-
-    // Deduct tokens
-    user.tokens -= 2;
-    await updateUser(userId, { tokens: user.tokens });
-
     try {
-      console.log('Downloading document...');
-      const fileBuffer = await downloadTelegramFile(bot, fileId);
-      console.log('Document downloaded, size:', fileBuffer.length);
-      
-      // Process with Claude
-      console.log('Sending document to Claude...');
-      let claudeAnswer = await askClaudeWithAtt(
-        user,
-        fileBuffer.toString('base64'),
-        ['document', mimeType],
-        caption
-      );
-      console.log('Received response from Claude, length:', claudeAnswer.length);
+        const userId = prefix + ctx.from.id;
 
-      // Update request status
-      requestState.status = 'completed';
-      await requestState.save();
+        await connectDB(process.env.MONGODB_URI);
+        let user = await getUser(userId);
 
-      // Send reply
-      console.log('Sending response to user...');
-      await ctx.reply(claudeAnswer);
-      console.log('Response sent successfully');
+        if (!user) {
+            user = await addUser({
+                id: userId,
+                name: ctx.from.first_name,
+                tokens: 10
+            });
+            await ctx.reply(walkThru(user.tokens));
+            return;
+        }
+
+        // Update streak for document uploads too
+        const streakResult = await updateUserStreak(userId);
+
+        // Check tokens
+        if (user.tokens < 2) {
+            return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
+        }
+
+        const fileId = ctx.message.document.file_id;
+        const fileName = ctx.message.document.file_name || "document";
+        const mimeType = ctx.message.document.mime_type || "application/octet-stream";
+        const caption = ctx.message.caption || `Analyze this ${fileName} document.`;
+
+        console.log(`Processing document: ${fileName}, MIME: ${mimeType}`);
+
+        // Create request in database
+        const requestState = new RequestState({
+            userId: userId,
+            tokenCost: 2,
+            messageId: ctx.message.message_id,
+            status: 'processing',
+            prompt: caption,
+            isMedia: true,
+            mediaType: 'document',
+            mediaFileId: fileId,
+            mediaMimeType: mimeType,
+            mediaFileName: fileName,
+            createdAt: new Date()
+        });
+        await requestState.save();
+
+        const thinkingMsg = await ctx.reply('Thinking...');
+
+        // Deduct tokens
+        user.tokens -= 2;
+        await updateUser(userId, { tokens: user.tokens });
+
+        try {
+            console.log('Downloading document...');
+            const fileBuffer = await downloadTelegramFile(bot, fileId);
+            console.log('Document downloaded, size:', fileBuffer.length);
+
+            // Process with Claude
+            console.log('Sending document to Claude...');
+            let claudeAnswer = await askClaudeWithAtt(
+                user,
+                fileBuffer.toString('base64'),
+                ['document', mimeType],
+                caption
+            );
+            console.log('Received response from Claude, length:', claudeAnswer.length);
+
+            // Update request status
+            requestState.status = 'completed';
+            await requestState.save();
+
+            // Send reply
+            console.log('Sending response to user...');
+            await ctx.reply(claudeAnswer);
+            console.log('Response sent successfully');
+        } catch (error) {
+            console.error('Error processing document:', error);
+
+            // Refund tokens on error
+            user.tokens += 2;
+            await updateUser(userId, { tokens: user.tokens });
+            console.log(`Refunded 2 tokens to user ${userId}`);
+
+            // Update request status
+            requestState.status = 'failed';
+            requestState.error = error.message;
+            await requestState.save();
+
+            await ctx.reply('Sorry, there was an error processing your document. Your tokens have been refunded.');
+        }
+
+        if (streakResult && streakResult.streakIncreased) {
+            setTimeout(async () => {
+                await checkStreakReward(userId);
+            }, 1000);
+        }
     } catch (error) {
-      console.error('Error processing document:', error);
-
-      // Refund tokens on error
-      user.tokens += 2;
-      await updateUser(userId, { tokens: user.tokens });
-      console.log(`Refunded 2 tokens to user ${userId}`);
-
-      // Update request status
-      requestState.status = 'failed';
-      requestState.error = error.message;
-      await requestState.save();
-
-      await ctx.reply('Sorry, there was an error processing your document. Your tokens have been refunded.');
+        console.error('Error handling document:', error);
+        await ctx.reply('Sorry, something went wrong. Please try again.');
     }
-  } catch (error) {
-    console.error('Error handling document:', error);
-    await ctx.reply('Sorry, something went wrong. Please try again.');
-  }
 });
 
 // bot.on('media_group_id', async (ctx) => {
@@ -1053,6 +1087,8 @@ async function performVerification(ctx, user, reference, processingMsg) {
     }
 }
 
+
+
 async function handleRegularMessage(ctx, userId) {
     try {
         let user = await getUser(userId);
@@ -1060,6 +1096,9 @@ async function handleRegularMessage(ctx, userId) {
         if (!user) {
             return ctx.reply('You need to start the bot first. Please send /start.');
         }
+
+        // Update user streak BEFORE processing the message
+        const streakResult = await updateUserStreak(userId);
 
         // Create the request state FIRST
         const requestState = new RequestState({
@@ -1102,35 +1141,37 @@ async function handleRegularMessage(ctx, userId) {
                 return;
             }
 
-            // Get Claude response
             let claudeAnswer = await askClaude(user, ctx.message.text);
 
-            // Check again if cancelled
             const finalRequest = await RequestState.findById(requestState._id);
             if (!finalRequest || finalRequest.status !== 'processing') {
                 console.log('Request was cancelled before response could be sent');
                 return;
             }
 
-            // Add Claude's response to conversation
             user.convoHistory.push({
                 role: "assistant",
                 content: claudeAnswer
             });
 
-            // Update user in database
             await updateUser(userId, { convoHistory: user.convoHistory });
 
-            // Update request status
             requestState.status = 'completed';
             await requestState.save();
 
-            // Send reply
             await ctx.reply(claudeAnswer);
+
+            // Check for streak reward AFTER successful response
+            if (streakResult && streakResult.streakIncreased) {
+                // Small delay to ensure the main response is sent first
+                setTimeout(async () => {
+                    await checkStreakReward(userId);
+                }, 1000);
+            }
+
         } catch (error) {
             console.error('Error processing message:', error);
 
-            // Refund tokens on error
             user.tokens += 1;
             await updateUser(userId, { tokens: user.tokens });
 
