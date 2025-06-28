@@ -89,8 +89,8 @@ export async function askClaude(user, prompt) {
         console.log('Sending request to Claude API...');
         const claude = await anthropic.messages.create({
             model: "claude-3-7-sonnet-latest",
-            max_tokens: 1024,
-            system: "You are Florence*, a highly knowledgeable teacher on every subject. You are patiently guiding the student through a difficult concept using clear, detailed yet concise answers.",
+            max_tokens: 1024 || 2048,
+            system: "You are Florence*, a highly knowledgeable teacher on every subject. You are patiently guiding the student through a difficult concept using clear, detailed yet concise answers. Exclude the fluff, go straight to answering the question.",
             messages: convo,
             tools: [{
                 type: "web_search_20250305",

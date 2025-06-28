@@ -50,6 +50,22 @@ const userSchema = new mongoose.Schema({
         type: Date,
         default: Date.now
     },
+    lastActiveDate: {
+        type: Date,
+        default: null
+    },
+    lastStreakUpdate: {
+        type: Date,
+        default: null
+    },
+    lastStreakReminder: {
+        type: Date,
+        default: null
+    },
+    lastStreakReward: {
+        type: Date,
+        default: null
+    },
 });
 
 export const User = mongoose.model('User', userSchema);

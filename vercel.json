@@ -28,26 +28,16 @@
       "dest": "/api/warmup.js"
     },
     {
-      "src": "/api/cron/streak-reminders",
-      "dest": "/api/cron/streak-reminders.js"
+      "src": "/api/daily-reminders",
+      "dest": "/api/daily-reminders.js"
     },
     {
-      "src": "/api/cron/streak-resets",
-      "dest": "/api/cron/streak-resets.js"
+      "src": "/api/daily-resets",
+      "dest": "/api/daily-resets.js"
     },
     {
       "src": "/(.*)",
       "dest": "/api/index.js"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/streak-reminders",
-      "schedule": "0 22 * * *"
-    },
-    {
-      "path": "/api/cron/streak-resets",
-      "schedule": "1 0 * * *"
     }
   ]
 }
