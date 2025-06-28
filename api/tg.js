@@ -246,7 +246,7 @@ bot.command('streak', async (ctx) => {
         }
 
         const firstName = streakInfo.name.split(' ')[0];
-        const message = `Hi ${firstName}, you have a streak of ${streakInfo.streak} days. Keep learning with Florence*!`;
+        const message = `Hi ${firstName}, you have a streak of ${streakInfo.streak} ${streakInfo.streak === 1 ? 'day' : 'days'}. Keep learning with Florence*!`;
 
         await ctx.reply(message);
     } catch (error) {

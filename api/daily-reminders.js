@@ -40,7 +40,7 @@ export default async function handler(req, res) {
             // Send reminder
             const telegramId = user.userId.replace('tg-', '');
             const firstName = user.name.split(' ')[0];
-            const message = `Hi ${firstName}, have you used Florence* today? You're on a roll, keep your learning streak on fire!\n\n(Your current streak is ${user.streak} days)`;
+            const message = `Hi ${firstName}, have you used Florence* today? You're on a roll, keep your learning streak on fire!\n\n(Your current streak is ${user.streak} ${user.streak === 1 ? 'day' : 'days'})`;
 
             try {
                 await bot.telegram.sendMessage(telegramId, message);
