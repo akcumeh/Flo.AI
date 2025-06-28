@@ -14,7 +14,6 @@ import { downloadTelegramFile } from '../utils/getMsgContent.js';
 import { Transaction } from '../models/transactions.js';
 import VerificationState from '../models/verificationState.js';
 import { initializeCardPayment, initializeBankTransfer, verifyTransaction } from '../utils/paystack.js';
-import { RequestState, PaymentState, MediaGroup } from '../models/serverless.js';
 import { updateUserStreak, checkStreakReward, getUserStreakInfo } from '../utils/streakManager.js';
 
 dotenv.config();
@@ -674,25 +673,11 @@ bot.on(message('photo'), async (ctx) => {
     }
 });
 
-// Fixed document handler in api/tg.js
 bot.on(message('document'), async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
-        const messageId = ctx.message.message_id;
 
         await connectDB(process.env.MONGODB_URI);
-        
-        // Check for duplicate processing
-        const existingRequest = await RequestState.findOne({
-            userId,
-            messageId
-        });
-
-        if (existingRequest) {
-            console.log(`Document message ${messageId} already being processed`);
-            return;
-        }
-
         let user = await getUser(userId);
 
         if (!user) {
@@ -705,10 +690,10 @@ bot.on(message('document'), async (ctx) => {
             return;
         }
 
-        // Update streak for document uploads
+        // Update streak for document uploads too
         const streakResult = await updateUserStreak(userId);
 
-        // Check tokens BEFORE creating request
+        // Check tokens
         if (user.tokens < 2) {
             return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
         }
@@ -738,7 +723,7 @@ bot.on(message('document'), async (ctx) => {
 
         const thinkingMsg = await ctx.reply('Thinking...');
 
-        // Deduct tokens AFTER creating request
+        // Deduct tokens
         user.tokens -= 2;
         await updateUser(userId, { tokens: user.tokens });
 
@@ -746,13 +731,6 @@ bot.on(message('document'), async (ctx) => {
             console.log('Downloading document...');
             const fileBuffer = await downloadTelegramFile(bot, fileId);
             console.log('Document downloaded, size:', fileBuffer.length);
-
-            // Check if request was cancelled
-            const updatedRequest = await RequestState.findById(requestState._id);
-            if (!updatedRequest || updatedRequest.status !== 'processing') {
-                console.log('Request was cancelled');
-                return;
-            }
 
             // Process with Claude
             console.log('Sending document to Claude...');
@@ -1112,19 +1090,6 @@ async function performVerification(ctx, user, reference, processingMsg) {
 
 async function handleRegularMessage(ctx, userId) {
     try {
-        const messageId = ctx.message.message_id;
-
-        // Check for duplicate processing first
-        const existingRequest = await RequestState.findOne({
-            userId,
-            messageId
-        });
-
-        if (existingRequest) {
-            console.log(`Text message ${messageId} already being processed`);
-            return;
-        }
-
         let user = await getUser(userId);
 
         if (!user) {
@@ -1133,11 +1098,6 @@ async function handleRegularMessage(ctx, userId) {
 
         // Update user streak BEFORE processing the message
         const streakResult = await updateUserStreak(userId);
-
-        // Check tokens BEFORE creating request
-        if (user.tokens < 1) {
-            return ctx.reply('You don\'t have enough tokens. Send /payments to top up.');
-        }
 
         // Create the request state FIRST
         const requestState = new RequestState({
@@ -1151,6 +1111,10 @@ async function handleRegularMessage(ctx, userId) {
         await requestState.save();
 
         // Deduct tokens
+        if (user.tokens < 1) {
+            return ctx.reply('You don\'t have enough tokens. Send /payments to top up.');
+        }
+
         user.tokens -= 1;
         await updateUser(userId, { tokens: user.tokens });
 
@@ -1204,6 +1168,7 @@ async function handleRegularMessage(ctx, userId) {
 
             // Check for streak reward AFTER successful response
             if (streakResult && streakResult.streakIncreased) {
+                // Small delay to ensure the main response is sent first
                 setTimeout(async () => {
                     await checkStreakReward(userId);
                 }, 1000);
