@@ -48,7 +48,7 @@ export async function updateUser(id, updates) {
     );
 }
 
-// Token ManagemenT
+// Token Management
 export async function addTokens({ id, amt }) {
     await connectDB(MONGODB_URI);
 
@@ -81,9 +81,6 @@ export async function tokenRefresh(user) {
 // Conversation Management
 export async function askClaude(user, prompt) {
     try {
-        // Don't add user prompt to convoHistory here - this is likely happening elsewhere
-        // and causing the duplication
-
         let convo = user.convoHistory || [];
 
         console.log('Sending request to Claude API...');
@@ -92,21 +89,19 @@ export async function askClaude(user, prompt) {
             max_tokens: 1024,
             system: "You are Florence*, a highly knowledgeable teacher on every subject. You are patiently guiding the student through a difficult concept using clear, detailed yet concise answers. Exclude the fluff, go straight to answering the question.",
             messages: convo,
-            tools: [{
-                type: "web_search_20250305",
-                name: "web_search",
-                max_uses: 5,
-                user_location: {
-                    type: "approximate",
-                }
-            }]
+            // tools: [{
+            //     type: "web_search_20250305",
+            //     name: "web_search",
+            //     max_uses: 5,
+            //     user_location: {
+            //         type: "approximate",
+            //     }
+            // }]
         });
 
         // Extract Claude's response
         let claudeAnswer = claude.content[0].text;
 
-        // IMPORTANT: Don't add the response to the conversation history here
-        // Just return the answer text and let the caller manage the conversation state
         return claudeAnswer;
     } catch (error) {
         console.error('Error calling Claude API:', error);
@@ -165,7 +160,7 @@ export async function askClaudeWithAtt(user, b64, fileType, prompt) {
 
         // Send the message to Claude
         const claudeWithAtt = await anthropic.messages.create({
-            model: "claude-3-5-sonnet-latest",
+            model: "claude-3-7-sonnet-20250219",
             max_tokens: 1024,
             system: "You are Florence*, a highly knowledgeable teacher on every subject. You are patiently guiding a student through a difficult concept using clear, detailed yet concise answers.",
             messages: user.convoHistory,

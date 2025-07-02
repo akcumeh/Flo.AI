@@ -24,7 +24,6 @@ const prefix = 'tg-';
 bot.on('inline_query', async (ctx) => {
     const query = ctx.inlineQuery.query;
 
-    // Check if the query is related to verification
     if (query.toLowerCase().startsWith('verify')) {
         await ctx.answerInlineQuery([
             {
@@ -718,10 +717,8 @@ bot.on(message('document'), async (ctx) => {
             return;
         }
 
-        // Update streak for document uploads
         const streakResult = await updateUserStreak(userId);
 
-        // Check tokens before creating request
         if (user.tokens < 2) {
             return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
         }
@@ -730,6 +727,20 @@ bot.on(message('document'), async (ctx) => {
         const fileName = ctx.message.document.file_name || "document";
         const mimeType = ctx.message.document.mime_type || "application/octet-stream";
         const caption = ctx.message.caption || `Analyze this ${fileName} document.`;
+
+        const supportedMimeTypes = ['application/pdf'];
+        const supportedExtensions = ['.pdf'];
+
+        const fileExtension = fileName.toLowerCase().includes('.')
+            ? fileName.substring(fileName.lastIndexOf('.'))
+            : '';
+
+        if (!supportedMimeTypes.includes(mimeType) && !supportedExtensions.includes(fileExtension)) {
+            return ctx.reply(
+                `Sorry, I can only process PDF documents. Your file appears to be: ${mimeType || 'unknown format'}.\n\n` +
+                `Please convert your document to PDF format and try again.`
+            );
+        }
 
         // Create request state BEFORE deducting tokens
         const requestState = new RequestState({
@@ -770,7 +781,7 @@ bot.on(message('document'), async (ctx) => {
             const claudeAnswer = await askClaudeWithAtt(
                 user,
                 fileBuffer.toString('base64'),
-                ['document', mimeType],
+                ['document', 'application/pdf'],
                 caption
             );
 
@@ -785,6 +796,7 @@ bot.on(message('document'), async (ctx) => {
             requestState.status = 'completed';
             await requestState.save();
 
+            await ctx.deleteMessage(thinkingMsg.message_id);
             await ctx.reply(claudeAnswer);
             console.log(`Document processing completed for user ${userId}`);
 
@@ -800,6 +812,7 @@ bot.on(message('document'), async (ctx) => {
             requestState.error = error.message;
             await requestState.save();
 
+            await ctx.deleteMessage(thinkingMsg.message_id);
             await ctx.reply('Sorry, there was an error processing your document. Your tokens have been refunded.');
         }
 
@@ -908,7 +921,6 @@ bot.on(message('document'), async (ctx) => {
 // });
 
 bot.on('message', async (ctx) => {
-    // Skip commands
     if (ctx.message.text?.startsWith('/')) return;
 
     try {
@@ -1138,7 +1150,10 @@ async function handleRegularMessage(ctx, userId) {
         // Update user streak BEFORE processing the message
         const streakResult = await updateUserStreak(userId);
 
-        // Create the request state FIRST
+        if (user.tokens < 1) {
+            return ctx.reply('You don\'t have enough tokens. Send /payments to top up.');
+        }
+        
         const requestState = new RequestState({
             userId,
             tokenCost: 1,
@@ -1149,15 +1164,9 @@ async function handleRegularMessage(ctx, userId) {
         });
         await requestState.save();
 
-        // Deduct tokens
-        if (user.tokens < 1) {
-            return ctx.reply('You don\'t have enough tokens. Send /payments to top up.');
-        }
-
         user.tokens -= 1;
         await updateUser(userId, { tokens: user.tokens });
 
-        // Send thinking message
         const thinkingMsg = await ctx.reply('Thinking...');
 
         // Make sure user has convoHistory array
@@ -1165,7 +1174,6 @@ async function handleRegularMessage(ctx, userId) {
             user.convoHistory = [];
         }
 
-        // Add user message to convo
         user.convoHistory.push({
             role: "user",
             content: ctx.message.text
@@ -1179,7 +1187,6 @@ async function handleRegularMessage(ctx, userId) {
                 return;
             }
 
-            // Get Claude response
             let claudeAnswer = await askClaude(user, ctx.message.text);
 
             // Check again if cancelled
@@ -1207,7 +1214,6 @@ async function handleRegularMessage(ctx, userId) {
 
             // Check for streak reward AFTER successful response
             if (streakResult && streakResult.streakIncreased) {
-                // Small delay to ensure the main response is sent first
                 setTimeout(async () => {
                     await checkStreakReward(userId);
                 }, 1000);
