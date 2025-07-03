@@ -1,13 +1,13 @@
 import express from 'express';
 import dotenv from 'dotenv';
-import connectDB from './db/db.js';
+import { ensureConnection } from './db/connection.js';
 import { tg } from './api/tg.js';
 import { wa } from './api/wa.js';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 3560;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 // Middleware
@@ -38,7 +38,7 @@ app.use((err, req, res, next) => {
 });
 
 // Connect to MongoDB and Start Server
-connectDB(MONGODB_URI)
+ensureConnection()
     .then(() => {
         app.listen(PORT, () => {
             console.log(`Server running on port ${PORT}`);

@@ -1,7 +1,6 @@
-// api/setup.js
 import { Telegraf } from 'telegraf';
 import dotenv from 'dotenv';
-import { connectDB } from '../db/db.js';
+import { ensureConnection } from '../db/connection.js';
 
 dotenv.config();
 
@@ -14,7 +13,7 @@ export default async function handler(req, res) {
         }
 
         // Connect to database
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         console.log('Connected to MongoDB');
 
         // Initialize Telegram bot

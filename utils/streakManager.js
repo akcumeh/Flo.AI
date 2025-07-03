@@ -1,5 +1,5 @@
 import { User } from '../models/user.js';
-import { connectDB } from '../db/db.js';
+import { ensureConnection } from '../db/connection.js';
 import { Telegraf } from 'telegraf';
 import dotenv from 'dotenv';
 
@@ -22,7 +22,7 @@ function isYesterday(date, today = new Date()) {
  */
 export async function updateUserStreak(userId) {
     try {
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
 
         const user = await User.findOne({ userId });
         if (!user) return null;
@@ -68,7 +68,8 @@ export async function updateUserStreak(userId) {
  */
 export async function checkStreakReward(userId) {
     try {
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
+
 
         const user = await User.findOne({ userId });
         if (!user) return false;
@@ -111,7 +112,7 @@ export async function checkStreakReward(userId) {
  */
 export async function getUserStreakInfo(userId) {
     try {
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
 
         const user = await User.findOne({ userId });
         if (!user) return null;

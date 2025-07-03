@@ -14,9 +14,6 @@ import {
     updateUser,
 
     askClaude,
-    
-    payWithBankTrf,
-    payWithCard,
 
 } from '../utils/utils.js';
 

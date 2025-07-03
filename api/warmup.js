@@ -1,6 +1,6 @@
-// api/warmup.js
 import { connectDB } from '../db/db.js';
 import dotenv from 'dotenv';
+import { ensureConnection } from '../db/connection.js';
 
 dotenv.config();
 
@@ -8,7 +8,7 @@ dotenv.config();
 export default async function handler(req, res) {
     try {
         // Connect to database (warms up the connection)
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
 
         // Return success
         res.status(200).json({ status: 'warmed up', timestamp: new Date().toISOString() });

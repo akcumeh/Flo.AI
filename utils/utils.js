@@ -1,46 +1,35 @@
-import Anthropic from '@anthropic-ai/sdk';
-import dotenv from 'dotenv';
-import axios from 'axios';
 import { User } from '../models/user.js';
-import { Payments } from '../models/payments.js';
-import { connectDB } from '../db/db.js';
-
-dotenv.config();
-
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/claude-bot';
-
-// Initialize Anthropic client
-let anthropic = new Anthropic({
-    apiKey: process.env.CLAUDE_API_KEY
-});
-console.log('✅ Claude API initialized successfully');
+import { ensureConnection } from '../db/connection.js';
+import {
+    sendTextMessage,
+    sendMessageWithAttachment,
+    createAttachmentMsg
+} from './claudeAPI.js';
 
 // User Management
 export async function addUser({ id, name, tokens = 10 }) {
-    await connectDB(MONGODB_URI);
+    await ensureConnection();
 
     const userData = {
         userId: id,
         name: name,
-        tokens: tokens || 10,
+        tokens: tokens,
         streak: 0,
         convoHistory: [],
         convos: [],
         lastTokenReward: new Date(),
     };
 
-    const user = await User.create(userData);
-    console.log(`Added user: ${id}`);
-    return user;
+    return await User.create(userData);
 }
 
 export async function getUser(id) {
-    await connectDB(MONGODB_URI);
+    await ensureConnection();
     return await User.findOne({ userId: id });
 }
 
 export async function updateUser(id, updates) {
-    await connectDB(MONGODB_URI);
+    await ensureConnection();
     return await User.findOneAndUpdate(
         { userId: id },
         { $set: updates },
@@ -48,216 +37,25 @@ export async function updateUser(id, updates) {
     );
 }
 
-// Token Management
-export async function addTokens({ id, amt }) {
-    await connectDB(MONGODB_URI);
-
-    const user = await User.findOne({ userId: id });
-    if (!user) return null;
-
-    user.tokens += amt;
-    await user.save();
-    console.log(`Added ${amt} tokens to user ${id}`);
-    return user.tokens;
-}
-
-export async function tokenRefresh(user) {
-    await connectDB(MONGODB_URI);
-
-    const now = new Date();
-    const lastTokenReward = new Date(user.lastTokenReward);
-    const elapsedTime = (now - lastTokenReward) / (1000 * 60 * 60);
-
-    if ((elapsedTime >= 24) && (user.tokens < 10)) {
-        user.tokens = 10;
-        user.lastTokenReward = now;
-        await user.save();
-        console.log(`Refreshed tokens for user ${user.userId}`);
-    }
-
-    return user;
-}
-
-// Conversation Management
+// Claude API calls
 export async function askClaude(user, prompt) {
-    try {
-        let convo = user.convoHistory || [];
+    const convo = user.convoHistory || [];
+    const newMsg = { role: 'user', content: prompt };
+    const messages = [...convo, newMsg];
 
-        console.log('Sending request to Claude API...');
-        const claude = await anthropic.messages.create({
-            model: "claude-3-7-sonnet-20250219",
-            max_tokens: 1024,
-            system: "You are Florence*, a highly knowledgeable teacher on every subject. You are patiently guiding the student through a difficult concept using clear, detailed yet concise answers. Exclude the fluff, go straight to answering the question.",
-            messages: convo,
-            // tools: [{
-            //     type: "web_search_20250305",
-            //     name: "web_search",
-            //     max_uses: 5,
-            //     user_location: {
-            //         type: "approximate",
-            //     }
-            // }]
-        });
-
-        // Extract Claude's response
-        let claudeAnswer = claude.content[0].text;
-
-        return claudeAnswer;
-    } catch (error) {
-        console.error('Error calling Claude API:', error);
-        throw error;
-    }
+    return await sendTextMessage(messages);
 }
 
-/**
- * Function to ask Claude with an attachment (image or document)
- * @param {Object} user - User object
- * @param {string} b64 - Base64 encoded file
- * @param {Array} fileType - Array with type and MIME type
- * @param {string} prompt - Text prompt
- * @returns {Promise<string>} - Claude's response
- */
 export async function askClaudeWithAtt(user, b64, fileType, prompt) {
-    try {
-        console.log('Sending request to Claude API...');
+    const messageContent = createAttachmentMsg(b64, fileType, prompt);
+    const convo = user.convoHistory || [];
+    const newMsg = { role: 'user', content: messageContent };
+    const messages = [...convo, newMsg];
 
-        // Validate fileType[1] is one of Claude's supported types
-        const supportedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
-        if (!supportedMimeTypes.includes(fileType[1])) {
-            console.warn(`Unsupported MIME type: ${fileType[1]}. Defaulting to image/jpeg.`);
-            fileType[1] = 'image/jpeg';
-        }
-
-        // Create message content with attachment
-        const messageContent = [
-            {
-                type: fileType[0],
-                source: {
-                    type: "base64",
-                    media_type: fileType[1],
-                    data: b64
-                }
-            },
-            {
-                type: "text",
-                text: prompt
-            }
-        ];
-
-        // Initialize the conversation if it's empty
-        if (!user.convoHistory || user.convoHistory.length === 0) {
-            user.convoHistory = [{
-                role: "user",
-                content: messageContent
-            }];
-        } else {
-            // Add this message to the conversation history
-            user.convoHistory.push({
-                role: "user",
-                content: messageContent
-            });
-        }
-
-        // Send the message to Claude
-        const claudeWithAtt = await anthropic.messages.create({
-            model: "claude-3-7-sonnet-20250219",
-            max_tokens: 1024,
-            system: "You are Florence*, a highly knowledgeable teacher on every subject. You are patiently guiding a student through a difficult concept using clear, detailed yet concise answers.",
-            messages: user.convoHistory,
-        });
-
-        // Check if the response contains content
-        if (!claudeWithAtt.content || claudeWithAtt.content.length === 0 || !claudeWithAtt.content[0].text) {
-            throw new Error('Empty or invalid response from Claude API');
-        }
-
-        // Extract Claude's response text
-        let claudeAnswer = claudeWithAtt.content[0].text;
-
-        // Add Claude's response to conversation history
-        user.convoHistory.push({
-            role: "assistant",
-            content: claudeAnswer
-        });
-
-        // Update user's conversation history in database
-        await updateUser(user.userId, { convoHistory: user.convoHistory });
-
-        return claudeAnswer;
-    } catch (error) {
-        console.error('Error in askClaudeWithAtt:', error);
-        throw error; // Re-throw to be handled by the caller
-    }
+    return await sendMessageWithAttachment(messages);
 }
 
-// Attachment Management
-// Image conversion function
-export function convertImgToBase64(buffer) {
-    // Convert buffer directly to base64
-    return Buffer.from(buffer).toString('base64');
-};
-
-// For URLs
-export async function convertUrlToBase64(url) {
-    try {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
-        return Buffer.from(response.data, 'binary').toString('base64');
-    } catch (error) {
-        console.error('Error converting URL to base64:', error);
-        throw error;
-    }
-};
-
-// PDFs
-export async function convertPDFToBase64(file) {
-    const response = await axios.get(file, { responseType: 'arraybuffer' });
-    return Buffer.from(response.data, 'binary').toString('base64');
-};
-
-// Payment processing
-export async function payWithBankTrf(user, tokens = 10, amt = 1000) {
-    await connectDB(MONGODB_URI);
-
-    // Create payment record
-    const payment = await Payments.create({
-        userId: user.userId,
-        name: user.name,
-        tokens: tokens,
-        time: new Date(),
-        payId: `${"FLO" + (new Date()).getTime() + "-" + user.userId}`,
-        paymentMethod: "Bank Transfer",
-    });
-
-    // Add tokens to user
-    user.tokens += tokens;
-    await user.save();
-
-    console.log(`Added ${tokens} tokens to user ${user.userId} via bank transfer`);
-    return { success: true, paymentId: payment.payId, message: 'Payment completed successfully' };
-}
-
-export async function payWithCard(user, tokens = 10, amt = 1000) {
-    await connectDB(MONGODB_URI);
-
-    // Create payment record
-    const payment = await Payments.create({
-        userId: user.userId,
-        name: user.name,
-        tokens: tokens,
-        time: new Date(),
-        payId: `${"FLO" + (new Date()).getTime() + "-" + user.userId}`,
-        paymentMethod: "Card",
-    });
-
-    // Add tokens to user
-    user.tokens += tokens;
-    await user.save();
-
-    console.log(`Added ${tokens} tokens to user ${user.userId} via card payment`);
-    return { success: true, paymentId: payment.payId, message: 'Payment completed successfully' };
-}
-
-// Welcome messages
+// Welcome message
 export function walkThru(tokens) {
     return `Hello there! Welcome to Florence*, the educational assistant at your fingertips.
 
@@ -281,6 +79,7 @@ Here are a few helpful commands for a smooth experience:
 /conversations - View and continue previous conversations.
 /stem - Answer math & science questions even better. [coming soon]
 /research - Get help with your research/thesis/project. [coming soon]
+/transactions - View your transaction history
 /feedback - Send feedback to the developers.
 /verify [reference number] - Verify your payment status.
 

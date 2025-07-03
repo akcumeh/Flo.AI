@@ -1,6 +1,6 @@
 import { Telegraf, Markup } from 'telegraf';
 import { message } from 'telegraf/filters';
-import { connectDB } from '../db/db.js';
+import { ensureConnection } from '../db/connection.js';
 import express from 'express';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
@@ -45,7 +45,7 @@ bot.on('inline_query', async (ctx) => {
 bot.command('start', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         let user = await getUser(userId);
         let isNewUser = false;
 
@@ -106,67 +106,6 @@ bot.command('start', async (ctx) => {
     }
 });
 
-bot.command('cancel', async (ctx) => {
-    try {
-        const userId = prefix + ctx.from.id;
-        let cancelledSomething = false;
-
-        await connectDB(process.env.MONGODB_URI);
-
-        // Find all processing requests for this user
-        const requestStates = await RequestState.find({
-            userId: userId,
-            status: 'processing'
-        });
-
-        // Cancel each request and refund tokens
-        for (const request of requestStates) {
-            request.status = 'cancelled';
-            await request.save();
-
-            // Refund tokens for each cancelled request
-            const user = await getUser(userId);
-            if (user) {
-                user.tokens += request.tokenCost || 1;
-                await updateUser(userId, { tokens: user.tokens });
-                cancelledSomething = true;
-            }
-        }
-
-        // Also check for media groups
-        const mediaGroups = await MediaGroup.find({
-            userId: userId,
-            $or: [
-                { status: 'collecting' },
-                { status: 'processing' }
-            ]
-        });
-
-        for (const mediaGroup of mediaGroups) {
-            if (mediaGroup.status === 'processing') {
-                const user = await getUser(userId);
-                if (user) {
-                    user.tokens += mediaGroup.tokenCost || 2;
-                    await updateUser(userId, { tokens: user.tokens });
-                }
-            }
-
-            mediaGroup.status = 'cancelled';
-            await mediaGroup.save();
-            cancelledSomething = true;
-        }
-
-        if (cancelledSomething) {
-            await ctx.reply('Request cancelled. Your tokens have been refunded.');
-        } else {
-            await ctx.reply('No ongoing requests to cancel.');
-        }
-    } catch (error) {
-        console.error('Error in cancel command:', error);
-        await ctx.reply('Sorry, something went wrong. Please try again.');
-    }
-});
-
 bot.command('about', async (ctx) => {
     await ctx.reply('Florence* is the educational assistant at your fingertips.\n\nI can help you with a variety of tasks, including:\n- Answering questions\n- Providing explanations\n- Offering study tips\n\nJust ask away!');
 });
@@ -175,7 +114,7 @@ bot.command('tokens', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
 
         if (!user) {
@@ -192,7 +131,7 @@ bot.command('payments', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
 
         if (!user) {
@@ -259,7 +198,7 @@ bot.command('transactions', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
 
         if (!user) {
@@ -314,7 +253,7 @@ bot.command('transactions', async (ctx) => {
 bot.command('verify', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
 
         if (!user) {
@@ -343,7 +282,7 @@ bot.command('conversations', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
 
         if (!user) {
@@ -388,7 +327,8 @@ bot.command('help', async (ctx) => {
 /about - Learn more about Florence*\n 
 /tokens - see how many tokens you have left\n 
 /payments - Top up your tokens\n 
-/conversations - View and continue previous conversations\n 
+/conversations - View and continue previous conversations\n
+/transactions - View your transaction history\n
 /stem - Answer math & science questions even better [coming soon]\n 
 /research - Get help with your research/thesis/project [coming soon]\n 
 /feedback - Send feedback to the developers\n 
@@ -403,7 +343,7 @@ bot.action('payment_card', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
         const state = await PaymentState.findOne({ userId });
 
@@ -429,7 +369,7 @@ bot.action('payment_bank', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
         const state = await PaymentState.findOne({ userId });
 
@@ -455,7 +395,7 @@ bot.action(/convo_(\d+)/, async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
 
         if (!user) {
@@ -481,7 +421,7 @@ bot.action('save_card_yes', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
         const state = await PaymentState.findOne({ userId });
 
@@ -507,7 +447,7 @@ bot.action('save_card_no', async (ctx) => {
     try {
         const userId = prefix + ctx.from.id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
         const user = await getUser(userId);
         const state = await PaymentState.findOne({ userId });
 
@@ -531,7 +471,7 @@ bot.action('save_card_no', async (ctx) => {
 
 bot.action(/^verify_(.+)$/, async (ctx) => {
     try {
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
 
         const userId = prefix + ctx.from.id;
         const user = await getUser(userId);
@@ -569,263 +509,170 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
 /* === Message Handlers === */
 
 bot.on(message('photo'), async (ctx) => {
+    const userId = prefix + ctx.from.id;
+    const messageId = ctx.message.message_id;
+
+    // Check for duplicates
+    const existingRequest = await RequestState.findOne({ userId, messageId });
+    if (existingRequest) return;
+
+    let user = await getUser(userId);
+    if (!user) {
+        user = await addUser({
+            id: userId,
+            name: ctx.from.first_name,
+            tokens: 10
+        });
+        await ctx.reply(walkThru(user.tokens));
+        return;
+    }
+
+    if (user.tokens < 2) {
+        return ctx.reply('You don\'t have enough tokens for an image upload. Send /payments to top up.');
+    }
+
+    const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+    const caption = ctx.message.caption || "Assess the following image.";
+
+    const requestState = new RequestState({
+        userId,
+        tokenCost: 2,
+        messageId,
+        status: 'processing',
+        prompt: caption,
+        isMedia: true,
+        mediaType: 'photo',
+        mediaFileId: fileId,
+        createdAt: new Date()
+    });
+
+    const thinkingMsg = await ctx.reply('Thinking...');
+
     try {
-        const userId = prefix + ctx.from.id;
-        const messageId = ctx.message.message_id;
+        // Parallel operations
+        await Promise.all([
+            requestState.save(),
+            updateUser(userId, { tokens: user.tokens - 2 }),
+            updateUserStreak(userId)
+        ]);
 
-        await connectDB(process.env.MONGODB_URI);
+        // Download and process
+        const imgBuffer = await downloadTelegramFile(bot, fileId);
+        const b64img = Buffer.from(imgBuffer).toString('base64');
 
-        // Check for duplicate processing first
-        const existingRequest = await RequestState.findOne({
-            userId,
-            messageId,
-        });
+        // Check cancellation
+        const currentRequest = await RequestState.findById(requestState._id);
+        if (!currentRequest || currentRequest.status !== 'processing') return;
 
-        if (existingRequest) {
-            console.log(`Photo message ${messageId} already processed or processing`);
-            return;
-        }
+        const claudeAnswer = await askClaudeWithAtt(user, b64img, ['image', 'image/jpeg'], caption);
 
-        let user = await getUser(userId);
-        if (!user) {
-            user = await addUser({
-                id: userId,
-                name: ctx.from.first_name,
-                tokens: 10
-            });
-            await ctx.reply(walkThru(user.tokens));
-            return;
-        }
+        // Final check and respond
+        const finalRequest = await RequestState.findById(requestState._id);
+        if (!finalRequest || finalRequest.status !== 'processing') return;
 
-        // Update streak for image uploads
-        const streakResult = await updateUserStreak(userId);
-
-        // Check tokens before creating request
-        if (user.tokens < 2) {
-            return ctx.reply('You don\'t have enough tokens for an image upload. Send /payments to top up.');
-        }
-
-        const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-        const caption = ctx.message.caption || "Assess the following image.";
-
-        // Create request state BEFORE deducting tokens
-        const requestState = new RequestState({
-            userId,
-            tokenCost: 2,
-            messageId,
-            status: 'processing',
-            prompt: caption,
-            isMedia: true,
-            mediaType: 'photo',
-            mediaFileId: fileId,
-            createdAt: new Date()
-        });
-        await requestState.save();
-
-        // Send thinking message
-        const thinkingMsg = await ctx.reply('Thinking...');
-
-        // Deduct tokens AFTER request creation
-        user.tokens -= 2;
-        await updateUser(userId, { tokens: user.tokens });
-
-        try {
-            console.log(`Processing photo for user ${userId}, message ${messageId}`);
-            
-            // Download and process image
-            const imgBuffer = await downloadTelegramFile(bot, fileId);
-            const b64img = Buffer.from(imgBuffer).toString('base64');
-
-            // Check if request was cancelled before API call
-            const currentRequest = await RequestState.findById(requestState._id);
-            if (!currentRequest || currentRequest.status !== 'processing') {
-                console.log('Request was cancelled before API call');
-                return;
-            }
-
-            // Call Claude API
-            const claudeAnswer = await askClaudeWithAtt(user, b64img, ['image', 'image/jpeg'], caption);
-
-            // Final check if request was cancelled
-            const finalRequest = await RequestState.findById(requestState._id);
-            if (!finalRequest || finalRequest.status !== 'processing') {
-                console.log('Request was cancelled after API call');
-                return;
-            }
-
-            // Mark as completed and send response
-            requestState.status = 'completed';
-            await requestState.save();
-
-            await ctx.reply(claudeAnswer);
-            console.log(`Photo processing completed for user ${userId}`);
-
-        } catch (error) {
-            console.error('Error processing photo:', error);
-
-            // Refund tokens on error
-            user.tokens += 2;
-            await updateUser(userId, { tokens: user.tokens });
-
-            // Update request status
-            requestState.status = 'failed';
-            requestState.error = error.message;
-            await requestState.save();
-
-            await ctx.reply('Sorry, there was an error processing your image. Your tokens have been refunded.');
-        }
-
-        // Check for streak reward
-        if (streakResult && streakResult.streakIncreased) {
-            setTimeout(async () => {
-                await checkStreakReward(userId);
-            }, 1000);
-        }
+        await Promise.all([
+            requestState.updateOne({ status: 'completed' }),
+            ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
+            ctx.reply(claudeAnswer)
+        ]);
 
     } catch (error) {
-        console.error('Error in photo handler:', error);
-        await ctx.reply('Sorry, something went wrong. Please try again.');
+        console.error('Error processing photo:', error);
+
+        await Promise.all([
+            updateUser(userId, { tokens: user.tokens }), // Refund
+            requestState.updateOne({ status: 'failed', error: error.message }),
+            ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
+            ctx.reply('Sorry, there was an error processing your image. Your tokens have been refunded.')
+        ]);
     }
 });
 
 bot.on(message('document'), async (ctx) => {
+    const userId = prefix + ctx.from.id;
+    const messageId = ctx.message.message_id;
+
+    const existingRequest = await RequestState.findOne({ userId, messageId });
+    if (existingRequest) return;
+
+    let user = await getUser(userId);
+    if (!user) {
+        user = await addUser({
+            id: userId,
+            name: ctx.from.first_name,
+            tokens: 10
+        });
+        await ctx.reply(walkThru(user.tokens));
+        return;
+    }
+
+    if (user.tokens < 2) {
+        return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
+    }
+
+    const fileId = ctx.message.document.file_id;
+    const fileName = ctx.message.document.file_name || "document";
+    const mimeType = ctx.message.document.mime_type || "application/octet-stream";
+    const caption = ctx.message.caption || `Analyze this ${fileName} document.`;
+
+    // Validate file type
+    if (!['application/pdf'].includes(mimeType) && !fileName.toLowerCase().endsWith('.pdf')) {
+        return ctx.reply('Sorry, I can only process PDF documents. Please convert your document to PDF format and try again.');
+    }
+
+    const requestState = new RequestState({
+        userId,
+        tokenCost: 2,
+        messageId,
+        status: 'processing',
+        prompt: caption,
+        isMedia: true,
+        mediaType: 'document',
+        mediaFileId: fileId,
+        mediaMimeType: mimeType,
+        mediaFileName: fileName,
+        createdAt: new Date()
+    });
+
+    const thinkingMsg = await ctx.reply('Thinking...');
+
     try {
-        const userId = prefix + ctx.from.id;
-        const messageId = ctx.message.message_id;
+        await Promise.all([
+            requestState.save(),
+            updateUser(userId, { tokens: user.tokens - 2 }),
+            updateUserStreak(userId)
+        ]);
 
-        await connectDB(process.env.MONGODB_URI);
+        const fileBuffer = await downloadTelegramFile(bot, fileId);
 
-        // Check for duplicate processing first
-        const existingRequest = await RequestState.findOne({
-            userId,
-            messageId,
-        });
+        const currentRequest = await RequestState.findById(requestState._id);
+        if (!currentRequest || currentRequest.status !== 'processing') return;
 
-        if (existingRequest) {
-            console.log(`Document message ${messageId} already processed or processing`);
-            return;
-        }
+        const claudeAnswer = await askClaudeWithAtt(
+            user,
+            fileBuffer.toString('base64'),
+            ['document', 'application/pdf'],
+            caption
+        );
 
-        let user = await getUser(userId);
-        if (!user) {
-            user = await addUser({
-                id: userId,
-                name: ctx.from.first_name,
-                tokens: 10
-            });
-            await ctx.reply(walkThru(user.tokens));
-            return;
-        }
+        const finalRequest = await RequestState.findById(requestState._id);
+        if (!finalRequest || finalRequest.status !== 'processing') return;
 
-        const streakResult = await updateUserStreak(userId);
-
-        if (user.tokens < 2) {
-            return ctx.reply('You don\'t have enough tokens for a document upload. Send /payments to top up.');
-        }
-
-        const fileId = ctx.message.document.file_id;
-        const fileName = ctx.message.document.file_name || "document";
-        const mimeType = ctx.message.document.mime_type || "application/octet-stream";
-        const caption = ctx.message.caption || `Analyze this ${fileName} document.`;
-
-        const supportedMimeTypes = ['application/pdf'];
-        const supportedExtensions = ['.pdf'];
-
-        const fileExtension = fileName.toLowerCase().includes('.')
-            ? fileName.substring(fileName.lastIndexOf('.'))
-            : '';
-
-        if (!supportedMimeTypes.includes(mimeType) && !supportedExtensions.includes(fileExtension)) {
-            return ctx.reply(
-                `Sorry, I can only process PDF documents. Your file appears to be: ${mimeType || 'unknown format'}.\n\n` +
-                `Please convert your document to PDF format and try again.`
-            );
-        }
-
-        // Create request state BEFORE deducting tokens
-        const requestState = new RequestState({
-            userId,
-            tokenCost: 2,
-            messageId,
-            status: 'processing',
-            prompt: caption,
-            isMedia: true,
-            mediaType: 'document',
-            mediaFileId: fileId,
-            mediaMimeType: mimeType,
-            mediaFileName: fileName,
-            createdAt: new Date()
-        });
-        await requestState.save();
-
-        const thinkingMsg = await ctx.reply('Thinking...');
-
-        // Deduct tokens AFTER request creation
-        user.tokens -= 2;
-        await updateUser(userId, { tokens: user.tokens });
-
-        try {
-            console.log(`Processing document for user ${userId}, message ${messageId}`);
-            
-            // Download and process document
-            const fileBuffer = await downloadTelegramFile(bot, fileId);
-
-            // Check if request was cancelled before API call
-            const currentRequest = await RequestState.findById(requestState._id);
-            if (!currentRequest || currentRequest.status !== 'processing') {
-                console.log('Request was cancelled before API call');
-                return;
-            }
-
-            // Call Claude API
-            const claudeAnswer = await askClaudeWithAtt(
-                user,
-                fileBuffer.toString('base64'),
-                ['document', 'application/pdf'],
-                caption
-            );
-
-            // Final check if request was cancelled
-            const finalRequest = await RequestState.findById(requestState._id);
-            if (!finalRequest || finalRequest.status !== 'processing') {
-                console.log('Request was cancelled after API call');
-                return;
-            }
-
-            // Mark as completed and send response
-            requestState.status = 'completed';
-            await requestState.save();
-
-            await ctx.deleteMessage(thinkingMsg.message_id);
-            await ctx.reply(claudeAnswer);
-            console.log(`Document processing completed for user ${userId}`);
-
-        } catch (error) {
-            console.error('Error processing document:', error);
-
-            // Refund tokens on error
-            user.tokens += 2;
-            await updateUser(userId, { tokens: user.tokens });
-
-            // Update request status
-            requestState.status = 'failed';
-            requestState.error = error.message;
-            await requestState.save();
-
-            await ctx.deleteMessage(thinkingMsg.message_id);
-            await ctx.reply('Sorry, there was an error processing your document. Your tokens have been refunded.');
-        }
-
-        // Check for streak reward
-        if (streakResult && streakResult.streakIncreased) {
-            setTimeout(async () => {
-                await checkStreakReward(userId);
-            }, 1000);
-        }
+        await Promise.all([
+            requestState.updateOne({ status: 'completed' }),
+            ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
+            ctx.reply(claudeAnswer)
+        ]);
 
     } catch (error) {
-        console.error('Error in document handler:', error);
-        await ctx.reply('Sorry, something went wrong. Please try again.');
+        console.error('Error processing document:', error);
+
+        await Promise.all([
+            updateUser(userId, { tokens: user.tokens }),
+            requestState.updateOne({ status: 'failed', error: error.message }),
+            ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
+            ctx.reply('Sorry, there was an error processing your document. Your tokens have been refunded.')
+        ]);
     }
 });
 
@@ -833,7 +680,7 @@ bot.on(message('document'), async (ctx) => {
 //     try {
 //         const userId = prefix + ctx.from.id;
 
-//         await connectDB(process.env.MONGODB_URI);
+//         await ensureConnection();
 //         let user = await getUser(userId);
 
 //         if (!user) {
@@ -927,7 +774,7 @@ bot.on('message', async (ctx) => {
         const userId = prefix + ctx.from.id;
         const messageId = ctx.message.message_id;
 
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
 
         // Add this improved check for duplicate processing
         const existingRequest = await RequestState.findOne({
@@ -1140,102 +987,86 @@ async function performVerification(ctx, user, reference, processingMsg) {
 }
 
 async function handleRegularMessage(ctx, userId) {
+    const user = await getUser(userId);
+    if (!user) {
+        return ctx.reply('You need to start the bot first. Please send /start.');
+    }
+
+    // Update streak and check tokens in one operation
+    const [streakResult] = await Promise.all([
+        updateUserStreak(userId),
+        user.tokens < 1 ? Promise.reject(new Error('insufficient_tokens')) : Promise.resolve()
+    ]).catch(err => {
+        if (err.message === 'insufficient_tokens') {
+            ctx.reply('You don\'t have enough tokens. Send /payments to top up.');
+            return [null];
+        }
+        throw err;
+    });
+
+    if (!streakResult) return;
+
+    // Create request and deduct token
+    const requestState = new RequestState({
+        userId,
+        tokenCost: 1,
+        messageId: ctx.message.message_id,
+        status: 'processing',
+        prompt: ctx.message.text,
+        createdAt: new Date()
+    });
+
+    const thinkingMsg = await ctx.reply('Thinking...');
+
     try {
-        let user = await getUser(userId);
+        // Save request state and deduct token in parallel
+        await Promise.all([
+            requestState.save(),
+            updateUser(userId, {
+                tokens: user.tokens - 1,
+                convoHistory: [...(user.convoHistory || []), { role: "user", content: ctx.message.text }]
+            })
+        ]);
 
-        if (!user) {
-            return ctx.reply('You need to start the bot first. Please send /start.');
+        // Check if cancelled
+        const currentRequest = await RequestState.findById(requestState._id);
+        if (!currentRequest || currentRequest.status !== 'processing') return;
+
+        // Get Claude response
+        const claudeAnswer = await askClaude(user, ctx.message.text);
+
+        // Final cancellation check
+        const finalRequest = await RequestState.findById(requestState._id);
+        if (!finalRequest || finalRequest.status !== 'processing') return;
+
+        // Update conversation and send response
+        await Promise.all([
+            updateUser(userId, {
+                convoHistory: [...user.convoHistory,
+                { role: "user", content: ctx.message.text },
+                { role: "assistant", content: claudeAnswer }
+                ]
+            }),
+            requestState.updateOne({ status: 'completed' }),
+            ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }), // Delete thinking message
+            ctx.reply(claudeAnswer)
+        ]);
+
+        // Check streak reward
+        if (streakResult?.streakIncreased) {
+            setTimeout(() => checkStreakReward(userId), 1000);
         }
 
-        // Update user streak BEFORE processing the message
-        const streakResult = await updateUserStreak(userId);
-
-        if (user.tokens < 1) {
-            return ctx.reply('You don\'t have enough tokens. Send /payments to top up.');
-        }
-        
-        const requestState = new RequestState({
-            userId,
-            tokenCost: 1,
-            messageId: ctx.message.message_id,
-            status: 'processing',
-            prompt: ctx.message.text,
-            createdAt: new Date()
-        });
-        await requestState.save();
-
-        user.tokens -= 1;
-        await updateUser(userId, { tokens: user.tokens });
-
-        const thinkingMsg = await ctx.reply('Thinking...');
-
-        // Make sure user has convoHistory array
-        if (!user.convoHistory) {
-            user.convoHistory = [];
-        }
-
-        user.convoHistory.push({
-            role: "user",
-            content: ctx.message.text
-        });
-
-        try {
-            // Check if request was cancelled USING THE SPECIFIC REQUEST ID
-            const latestRequest = await RequestState.findById(requestState._id);
-            if (!latestRequest || latestRequest.status !== 'processing') {
-                console.log('Request was cancelled during thinking period');
-                return;
-            }
-
-            let claudeAnswer = await askClaude(user, ctx.message.text);
-
-            // Check again if cancelled
-            const finalRequest = await RequestState.findById(requestState._id);
-            if (!finalRequest || finalRequest.status !== 'processing') {
-                console.log('Request was cancelled before response could be sent');
-                return;
-            }
-
-            // Add Claude's response to conversation
-            user.convoHistory.push({
-                role: "assistant",
-                content: claudeAnswer
-            });
-
-            // Update user in database
-            await updateUser(userId, { convoHistory: user.convoHistory });
-
-            // Update request status
-            requestState.status = 'completed';
-            await requestState.save();
-
-            // Send reply
-            await ctx.reply(claudeAnswer);
-
-            // Check for streak reward AFTER successful response
-            if (streakResult && streakResult.streakIncreased) {
-                setTimeout(async () => {
-                    await checkStreakReward(userId);
-                }, 1000);
-            }
-
-        } catch (error) {
-            console.error('Error processing message:', error);
-
-            // Refund tokens on error
-            user.tokens += 1;
-            await updateUser(userId, { tokens: user.tokens });
-
-            // Update request status
-            requestState.status = 'failed';
-            requestState.error = error.message;
-            await requestState.save();
-
-            await ctx.reply('Sorry, something went wrong. Your token has been refunded.');
-        }
     } catch (error) {
-        console.error('Error in handleRegularMessage:', error);
-        throw error;
+        console.error('Error processing message:', error);
+
+        // Cleanup on error
+        await Promise.all([
+            updateUser(userId, { tokens: user.tokens }), // Refund token
+            requestState.updateOne({ status: 'failed', error: error.message }),
+            ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
+            ctx.reply('Sorry, something went wrong. Your token has been refunded.')
+        ]);
     }
 }
 
@@ -1288,7 +1119,7 @@ async function processCardPayment(ctx, user, state) {
 
 async function processMediaGroup(mediaGroupId, userId) {
     try {
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
 
         const mediaGroup = await MediaGroup.findOne({
             userId: userId,
@@ -1461,7 +1292,7 @@ async function handleMediaGroupItem(ctx, user, mediaType) {
 
 router.post('/payment/callback', async (req, res) => {
     try {
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
 
         const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
             .update(JSON.stringify(req.body))
@@ -1564,7 +1395,7 @@ export default async function handler(req, res) {
 
         // Connect to MongoDB (with retry logic for serverless cold starts)
         try {
-            await connectDB(process.env.MONGODB_URI);
+            await ensureConnection();
         } catch (dbError) {
             console.error('Database connection error:', dbError);
             // Still continue to process the update even if DB connection fails
@@ -1733,7 +1564,7 @@ const mediaGroupSchema = new mongoose.Schema({
 // Schedule cleanup of expired media groups
 setInterval(async () => {
     try {
-        await connectDB(process.env.MONGODB_URI);
+        await ensureConnection();
 
         // Find expired collecting groups
         const expiredGroups = await MediaGroup.find({
