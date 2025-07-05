@@ -148,19 +148,35 @@ export function getMessageContent(ctx) {
  */
 export async function downloadTelegramFile(bot, fileId) {
     try {
-        // Get file link
-        const fileLink = await bot.telegram.getFileLink(fileId);
+        console.log(`📥 Starting download for file: ${fileId}`);
 
-        // Fetch the file
-        const response = await fetch(fileLink);
+        // Get file info first
+        const file = await bot.telegram.getFile(fileId);
+        console.log(`📄 File info: ${file.file_path}, size: ${file.file_size} bytes`);
+
+        // Use the file path directly with bot token
+        const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
+        console.log(`🔗 Downloading from: ${fileUrl.replace(process.env.BOT_TOKEN, 'BOT_TOKEN')}`);
+
+        // Download with improved settings (timeout removed)
+        const response = await fetch(fileUrl, {
+            method: 'GET',
+            headers: {
+                'User-Agent': 'Florence-Bot/1.0'
+            }
+        });
+
         if (!response.ok) {
-            throw new Error(`HTTP error! Status: ${response.status}`);
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
-        // Return as buffer
-        return await response.arrayBuffer().then(buffer => Buffer.from(buffer));
+        const buffer = await response.arrayBuffer();
+        console.log(`✅ Downloaded ${buffer.byteLength} bytes`);
+
+        return Buffer.from(buffer);
+
     } catch (error) {
-        console.error('Error downloading file:', error);
-        throw error;
+        console.error('❌ Download error:', error);
+        throw new Error(`File download failed: ${error.message}`);
     }
 }

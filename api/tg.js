@@ -570,17 +570,54 @@ bot.on(message('photo'), async (ctx) => {
         const finalRequest = await RequestState.findById(requestState._id);
         if (!finalRequest || finalRequest.status !== 'processing') return;
 
+        // Get fresh user data and store image in conversation history
+        const freshUser = await getUser(userId);
+        const newConvoHistory = [
+            ...(freshUser.convoHistory || []),
+            {
+                role: "user",
+                content: [
+                    {
+                        type: "text",
+                        text: caption
+                    },
+                    {
+                        type: "image",
+                        source: {
+                            type: "base64",
+                            media_type: "image/jpeg",
+                            data: b64img
+                        }
+                    }
+                ]
+            },
+            {
+                role: "assistant",
+                content: claudeAnswer
+            }
+        ];
+
         await Promise.all([
+            updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply(claudeAnswer)
+            ctx.reply(claudeAnswer).then(() => console.log('📤 Image response sent to user'))
         ]);
-
     } catch (error) {
-        console.error('Error processing photo:', error);
+        console.error('❌ Error processing photo:', error);
+
+        // Always refund tokens on any error
+        try {
+            const currentUser = await getUser(userId);
+            if (currentUser) {
+                await updateUser(userId, { tokens: currentUser.tokens + 2 }); // Refund 2 tokens
+                console.log('💰 Refunded 2 tokens to user');
+            }
+        } catch (refundError) {
+            console.error('❌ Error refunding tokens:', refundError);
+        }
 
         await Promise.all([
-            updateUser(userId, { tokens: user.tokens }), // Refund
             requestState.updateOne({ status: 'failed', error: error.message }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
             ctx.reply('Sorry, there was an error processing your image. Your tokens have been refunded.')
@@ -589,6 +626,13 @@ bot.on(message('photo'), async (ctx) => {
 });
 
 bot.on(message('document'), async (ctx) => {
+    console.log('📄 Document upload received:', {
+        userId: prefix + ctx.from.id,
+        fileName: ctx.message.document.file_name,
+        mimeType: ctx.message.document.mime_type,
+        fileSize: ctx.message.document.file_size
+    });
+
     const userId = prefix + ctx.from.id;
     const messageId = ctx.message.message_id;
 
@@ -643,10 +687,14 @@ bot.on(message('document'), async (ctx) => {
             updateUserStreak(userId)
         ]);
 
+        console.log('📥 Downloading document...');
         const fileBuffer = await downloadTelegramFile(bot, fileId);
+        console.log(`📄 Document downloaded: ${fileBuffer.length} bytes`);
 
         const currentRequest = await RequestState.findById(requestState._id);
         if (!currentRequest || currentRequest.status !== 'processing') return;
+
+        console.log('📄 Sending document to Claude...');
 
         const claudeAnswer = await askClaudeWithAtt(
             user,
@@ -654,118 +702,102 @@ bot.on(message('document'), async (ctx) => {
             ['document', 'application/pdf'],
             caption
         );
+        console.log('✅ Claude response received for document');
 
         const finalRequest = await RequestState.findById(requestState._id);
         if (!finalRequest || finalRequest.status !== 'processing') return;
 
+        // Get fresh user data and store document in conversation history (if under 50MB)
+        const freshUser = await getUser(userId);
+        const fileSizeInMB = fileBuffer.length / (1024 * 1024);
+
+        let newConvoHistory;
+        if (fileSizeInMB < 50) {
+            // Store document in conversation history
+            newConvoHistory = [
+                ...(freshUser.convoHistory || []),
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: caption
+                        },
+                        {
+                            type: "document",
+                            source: {
+                                type: "base64",
+                                media_type: mimeType,
+                                data: fileBuffer.toString('base64')
+                            }
+                        }
+                    ]
+                },
+                {
+                    role: "assistant",
+                    content: claudeAnswer
+                }
+            ];
+            console.log(`📚 Document stored in conversation history (${fileSizeInMB.toFixed(2)}MB)`);
+        } else {
+            // Just store text reference for large files
+            newConvoHistory = [
+                ...(freshUser.convoHistory || []),
+                {
+                    role: "user",
+                    content: `[Large Document: ${fileName} - ${fileSizeInMB.toFixed(2)}MB] ${caption}`
+                },
+                {
+                    role: "assistant",
+                    content: claudeAnswer
+                }
+            ];
+            console.log(`📚 Large document reference stored (${fileSizeInMB.toFixed(2)}MB)`);
+        }
+
         await Promise.all([
+            updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply(claudeAnswer)
+            ctx.reply(claudeAnswer).then(() => console.log('📤 Document response sent to user'))
         ]);
 
     } catch (error) {
-        console.error('Error processing document:', error);
+        console.error('❌ Error processing document:', error);
 
+        // Always refund tokens on any error
+        try {
+            const currentUser = await getUser(userId);
+            if (currentUser) {
+                await updateUser(userId, { tokens: currentUser.tokens + 2 }); // Refund 2 tokens
+                console.log('💰 Refunded 2 tokens to user');
+            }
+        } catch (refundError) {
+            console.error('❌ Error refunding tokens:', refundError);
+        }
+
+        // Determine error message based on error type
+        let errorMessage;
+        const errorString = error.message.toLowerCase();
+
+        if (errorString.includes('timeout') || errorString.includes('timed out')) {
+            errorMessage = 'Sorry, the request timed out while processing your document. Please try uploading it again or use a smaller file. Your tokens have been refunded.';
+        } else if (errorString.includes('fetch failed') || errorString.includes('download failed')) {
+            errorMessage = 'Sorry, there was a problem downloading your document. Please try uploading it again. Your tokens have been refunded.';
+        } else if (errorString.includes('econnreset') || errorString.includes('connection')) {
+            errorMessage = 'Sorry, there was a connection error. Please try uploading your document again. Your tokens have been refunded.';
+        } else {
+            errorMessage = 'Sorry, there was an error processing your document. Your tokens have been refunded.';
+        }
+
+        // Update request state and send error message
         await Promise.all([
-            updateUser(userId, { tokens: user.tokens }),
             requestState.updateOne({ status: 'failed', error: error.message }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply('Sorry, there was an error processing your document. Your tokens have been refunded.')
+            ctx.reply(errorMessage)
         ]);
     }
 });
-
-// bot.on('media_group_id', async (ctx) => {
-//     try {
-//         const userId = prefix + ctx.from.id;
-
-//         await ensureConnection();
-//         let user = await getUser(userId);
-
-//         if (!user) {
-//             user = await addUser({
-//                 id: userId,
-//                 name: ctx.from.first_name,
-//                 tokens: 10
-//             });
-//             await ctx.reply(walkThru(user.tokens));
-//             return;
-//         }
-
-//         // Check if user has enough tokens (2 tokens for media processing)
-//         if (user.tokens < 2) {
-//             return ctx.reply('You don\'t have enough tokens for media uploads. Send /payments to top up.');
-//         }
-
-//         // Get or create media group
-//         const mediaGroupId = ctx.message.media_group_id;
-//         let mediaGroup = await MediaGroup.findOne({
-//             userId: userId,
-//             mediaGroupId: mediaGroupId,
-//             status: 'collecting'
-//         });
-
-//         if (!mediaGroup) {
-//             mediaGroup = new MediaGroup({
-//                 userId,
-//                 mediaGroupId,
-//                 status: 'collecting',
-//                 caption: ctx.message.caption || '',
-//                 mediaItems: [],
-//                 tokenCost: 2,
-//                 expiresAt: new Date(Date.now() + 60000), // 1 minute expiry
-//                 lastActivity: new Date()
-//             });
-//         } else {
-//             // Update last activity
-//             mediaGroup.lastActivity = new Date();
-//             // Update caption if present and not already set
-//             if (ctx.message.caption && !mediaGroup.caption) {
-//                 mediaGroup.caption = ctx.message.caption;
-//             }
-//         }
-
-//         // Add the media item
-//         const mediaType = ctx.message.photo ? 'photo' : 'document';
-//         const fileId = ctx.message.photo
-//             ? ctx.message.photo[ctx.message.photo.length - 1].file_id
-//             : ctx.message.document.file_id;
-
-//         // Check if we already have this file (avoid duplicates)
-//         const fileExists = mediaGroup.mediaItems.some(item => item.fileId === fileId);
-//         if (!fileExists) {
-//             mediaGroup.mediaItems.push({
-//                 fileId,
-//                 type: mediaType,
-//                 mimeType: ctx.message.document?.mime_type || 'image/jpeg',
-//                 fileName: ctx.message.document?.file_name || `photo_${mediaGroup.mediaItems.length + 1}.jpg`
-//             });
-//         }
-
-//         // Check if user is trying to send too many items (>5)
-//         if (mediaGroup.mediaItems.length > 5) {
-//             mediaGroup.status = 'cancelled';
-//             await mediaGroup.save();
-//             return ctx.reply('You can only send up to 5 items in a group. Please try again with fewer items.');
-//         }
-
-//         await mediaGroup.save();
-
-//         // Start a timeout to process the group after a short delay (to collect all items)
-//         setTimeout(async () => {
-//             try {
-//                 await processMediaGroup(mediaGroupId, userId);
-//             } catch (error) {
-//                 console.error('Error processing media group:', error);
-//             }
-//         }, 2000); // 2 seconds delay
-
-//     } catch (error) {
-//         console.error('Error handling media group:', error);
-//         await ctx.reply('Sorry, something went wrong. Please try again.');
-//     }
-// });
 
 bot.on('message', async (ctx) => {
     if (ctx.message.text?.startsWith('/')) return;
@@ -1019,37 +1051,41 @@ async function handleRegularMessage(ctx, userId) {
     const thinkingMsg = await ctx.reply('Thinking...');
 
     try {
-        // Save request state and deduct token in parallel
+        console.log('📝 Text prompt sent to Claude');
+
+        // Save request state and deduct token
         await Promise.all([
             requestState.save(),
-            updateUser(userId, {
-                tokens: user.tokens - 1,
-                convoHistory: [...(user.convoHistory || []), { role: "user", content: ctx.message.text }]
-            })
+            updateUser(userId, { tokens: user.tokens - 1 })
         ]);
 
         // Check if cancelled
         const currentRequest = await RequestState.findById(requestState._id);
         if (!currentRequest || currentRequest.status !== 'processing') return;
 
-        // Get Claude response
-        const claudeAnswer = await askClaude(user, ctx.message.text);
+        // Get fresh user data with current conversation history
+        const freshUser = await getUser(userId);
+
+        // Get Claude response with current conversation history
+        const claudeAnswer = await askClaude(freshUser, ctx.message.text);
+        console.log('✅ Claude response received');
 
         // Final cancellation check
         const finalRequest = await RequestState.findById(requestState._id);
         if (!finalRequest || finalRequest.status !== 'processing') return;
 
-        // Update conversation and send response
+        // Update conversation history with both user message and Claude response
+        const newConvoHistory = [
+            ...(freshUser.convoHistory || []),
+            { role: "user", content: ctx.message.text },
+            { role: "assistant", content: claudeAnswer }
+        ];
+
         await Promise.all([
-            updateUser(userId, {
-                convoHistory: [...user.convoHistory,
-                { role: "user", content: ctx.message.text },
-                { role: "assistant", content: claudeAnswer }
-                ]
-            }),
+            updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
-            ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }), // Delete thinking message
-            ctx.reply(claudeAnswer)
+            ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
+            ctx.reply(claudeAnswer).then(() => console.log('📤 Message sent to user'))
         ]);
 
         // Check streak reward
@@ -1058,11 +1094,20 @@ async function handleRegularMessage(ctx, userId) {
         }
 
     } catch (error) {
-        console.error('Error processing message:', error);
+        console.error('❌ Error processing message:', error);
 
-        // Cleanup on error
+        // Always refund tokens on any error
+        try {
+            const currentUser = await getUser(userId);
+            if (currentUser) {
+                await updateUser(userId, { tokens: currentUser.tokens + 1 }); // Refund 1 token
+                console.log('💰 Refunded 1 token to user');
+            }
+        } catch (refundError) {
+            console.error('❌ Error refunding tokens:', refundError);
+        }
+
         await Promise.all([
-            updateUser(userId, { tokens: user.tokens }), // Refund token
             requestState.updateOne({ status: 'failed', error: error.message }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
             ctx.reply('Sorry, something went wrong. Your token has been refunded.')
@@ -1376,7 +1421,8 @@ export function setupWebhook(url) {
 
 export default async function handler(req, res) {
     try {
-        // Only allow POST requests for the webhook
+        console.log('Received webhook request from Telegram');
+
         if (req.method !== 'POST') {
             if (req.method === 'GET') {
                 // Set the webhook URL on GET request
@@ -1393,18 +1439,12 @@ export default async function handler(req, res) {
             return res.status(405).send('Method not allowed');
         }
 
-        // Connect to MongoDB (with retry logic for serverless cold starts)
-        try {
-            await ensureConnection();
-        } catch (dbError) {
-            console.error('Database connection error:', dbError);
-            // Still continue to process the update even if DB connection fails
-        }
+        await ensureConnection();
+        console.log('📡 Processing Telegram update...');
 
-        // Process the update from Telegram
         await bot.handleUpdate(req.body);
+        console.log('✅ Telegram update processed successfully');
 
-        // Always respond with 200 OK to Telegram quickly
         res.status(200).send('OK');
     } catch (error) {
         console.error('Error handling webhook:', error);

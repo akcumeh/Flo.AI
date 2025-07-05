@@ -3,7 +3,8 @@ import { ensureConnection } from '../db/connection.js';
 import {
     sendTextMessage,
     sendMessageWithAttachment,
-    createAttachmentMsg
+    createAttachmentMsg,
+    formatMessagesForClaude
 } from './claudeAPI.js';
 
 // User Management
@@ -39,27 +40,34 @@ export async function updateUser(id, updates) {
 
 // Claude API calls
 export async function askClaude(user, prompt) {
+    console.log('📝 Text prompt sent to Claude');
     const convo = user.convoHistory || [];
-    const newMsg = { role: 'user', content: prompt };
-    const messages = [...convo, newMsg];
+    const formattedMessages = formatMessagesForClaude(convo, prompt);
 
-    return await sendTextMessage(messages);
+    const response = await sendTextMessage(formattedMessages);
+
+    console.log('✅ Claude response received');
+    return response.replace(/^\[Florence\*\]\s*/, '');
 }
 
 export async function askClaudeWithAtt(user, b64, fileType, prompt) {
-    const messageContent = createAttachmentMsg(b64, fileType, prompt);
-    const convo = user.convoHistory || [];
-    const newMsg = { role: 'user', content: messageContent };
-    const messages = [...convo, newMsg];
+    console.log('📎 Image/document prompt sent to Claude');
 
-    return await sendMessageWithAttachment(messages);
+    const newMessageContent = createAttachmentMsg(b64, fileType, prompt);
+    const convo = user.convoHistory || [];
+    const formattedMessages = formatMessagesForClaude(convo, newMessageContent);
+
+    const response = await sendMessageWithAttachment(formattedMessages);
+
+    console.log('✅ Claude response received');
+    return response.replace(/^\[Florence\*\]\s*/, '');
 }
 
 // Welcome message
 export function walkThru(tokens) {
     return `Hello there! Welcome to Florence*, the educational assistant at your fingertips.
 
-Florence* is here to help you with your studies, research, and any questions you may have. You can ask anything from math and science to finance, history and literature. Just type your question, send a picture or a document, and you'll be provided a detailed answer within 3-30 seconds.
+Florence* is here to help you with your studies, and answer any questions you may have. You can ask anything from math and science to finance, history and literature. Just type your question, send a picture or a document, and you'll be provided a detailed answer within 3-30 seconds.
 
 Interacting with Florence* costs you tokens*. Every now and then you'll get these, but you can also purchase more of them at any time.
 
