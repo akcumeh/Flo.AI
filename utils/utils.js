@@ -3,7 +3,8 @@ import { ensureConnection } from '../db/connection.js';
 import {
     sendTextMessage,
     sendMessageWithAttachment,
-    createAttachmentMsg
+    createAttachmentMsg,
+    formatMessagesForClaude
 } from './claudeAPI.js';
 
 // User Management
@@ -40,26 +41,70 @@ export async function updateUser(id, updates) {
 // Claude API calls
 export async function askClaude(user, prompt) {
     const convo = user.convoHistory || [];
-    const newMsg = { role: 'user', content: prompt };
-    const messages = [...convo, newMsg];
 
-    return await sendTextMessage(messages);
+    const formattedMessages = formatMessagesForClaude(convo, prompt);
+
+    const response = await sendTextMessage(formattedMessages);
+
+    return response.replace(/^\[Florence\*\]\s*/, '');
 }
 
 export async function askClaudeWithAtt(user, b64, fileType, prompt) {
     const messageContent = createAttachmentMsg(b64, fileType, prompt);
     const convo = user.convoHistory || [];
-    const newMsg = { role: 'user', content: messageContent };
-    const messages = [...convo, newMsg];
 
-    return await sendMessageWithAttachment(messages);
+    const formattedMessages = [];
+
+    if (convo && convo.length > 0) {
+        convo.forEach(msg => {
+            if (msg.role === 'user') {
+                formattedMessages.push({
+                    role: 'user',
+                    content: `Here is the user query for you to respond to:
+<user_query>
+${msg.content}
+</user_query>`
+                });
+            } else if (msg.role === 'assistant') {
+                formattedMessages.push({
+                    role: 'assistant',
+                    content: `[Florence*]
+
+${msg.content}`
+                });
+            }
+        });
+    }
+
+    formattedMessages.push({
+        role: 'user',
+        content: [
+            {
+                type: 'text',
+                text: `Here is the user query for you to respond to:
+<user_query>
+${prompt}
+</user_query>`
+            },
+            ...messageContent.filter(item => item.type !== 'text')
+        ]
+    });
+
+    formattedMessages.push({
+        role: 'assistant',
+        content: '[Florence*]'
+    });
+
+    const response = await sendMessageWithAttachment(formattedMessages);
+
+    return response.replace(/^\[Florence\*\]\s*/, '');
 }
 
 // Welcome message
 export function walkThru(tokens) {
     return `Hello there! Welcome to Florence*, the educational assistant at your fingertips.
 
-Florence* is here to help you with your studies, research, and any questions you may have. You can ask anything from math and science to finance, history and literature. Just type your question, send a picture or a document, and you'll be provided a detailed answer within 3-30 seconds.
+Florence* is here to help you with your studies, and answer any questions you may have. You can ask anything from math and science to finance, history and literature. Just type your question, send a picture or a document, and you'll be provided a detailed answer within 3-30 seconds.
 
 Interacting with Florence* costs you tokens*. Every now and then you'll get these, but you can also purchase more of them at any time.
 
