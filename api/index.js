@@ -1,11 +1,11 @@
 import dotenv from 'dotenv';
 import { Telegraf } from 'telegraf';
-import { connectDB } from '../db/db.js';
+import { ensureConnection } from '../db/connection.js';
 
 dotenv.config();
 
 // Connect to database
-connectDB(process.env.MONGODB_URI);
+await ensureConnection();
 
 // Initialize bot for webhook setup only
 const bot = new Telegraf(process.env.BOT_TOKEN);

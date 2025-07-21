@@ -602,12 +602,12 @@ bot.on(message('photo'), async (ctx) => {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply(claudeAnswer).then(() => console.log('📤 Image response sent to user'))
+            ctx.reply(claudeAnswer, { parse_mode: 'HTML' })
+                .then(() => console.log('📤 Image response sent to user'))
         ]);
     } catch (error) {
         console.error('❌ Error processing photo:', error);
 
-        // Always refund tokens on any error
         try {
             const currentUser = await getUser(userId);
             if (currentUser) {
@@ -760,7 +760,7 @@ bot.on(message('document'), async (ctx) => {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply(claudeAnswer).then(() => console.log('📤 Document response sent to user'))
+            ctx.reply(claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Document response sent to user'))
         ]);
 
     } catch (error) {
@@ -1086,7 +1086,7 @@ async function handleRegularMessage(ctx, userId) {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply(claudeAnswer).then(() => console.log('📤 Message sent to user'))
+            ctx.reply(claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Message sent to user'))
         ]);
 
         // Check streak reward
@@ -1634,6 +1634,58 @@ router.post('/', (req, res) => {
 
 router.get('/', (req, res) => {
     res.status(200).send('Telegram bot is running');
+});
+
+// Weekly analytics endpoint (for cron jobs)
+router.post('/analytics/weekly', async (req, res) => {
+    try {
+        const authToken = req.headers.authorization?.split(' ')[1];
+        if (authToken !== process.env.ADMIN_API_KEY) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const { sendAnalytics } = await import('../scripts/analytics.js');
+        const analytics = await sendAnalytics('week');
+
+        res.status(200).json({
+            success: true,
+            message: 'Weekly analytics sent',
+            data: analytics
+        });
+
+    } catch (error) {
+        console.error('Weekly analytics API error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Monthly analytics endpoint
+router.post('/analytics/monthly', async (req, res) => {
+    try {
+        const authToken = req.headers.authorization?.split(' ')[1];
+        if (authToken !== process.env.ADMIN_API_KEY) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const { sendAnalytics } = await import('../scripts/analytics.js');
+        const analytics = await sendAnalytics('month');
+
+        res.status(200).json({
+            success: true,
+            message: 'Monthly analytics sent',
+            data: analytics
+        });
+
+    } catch (error) {
+        console.error('Monthly analytics API error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
 });
 
 export const tg = { router, bot, setupWebhook };
