@@ -4,10 +4,8 @@ import { ensureConnection } from '../db/connection.js';
 
 dotenv.config();
 
-// Connect to database
 await ensureConnection();
 
-// Initialize bot for webhook setup only
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Main entry point for Vercel

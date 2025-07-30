@@ -21,6 +21,118 @@ dotenv.config();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const prefix = 'tg-';
 
+/* === MarkdownV2 Formatter === */
+function formatForMarkdownV2(text) {
+    if (!text) return text;
+
+    let result = text;
+
+    result = result.replace(/<pre>(.*?)<\/pre>/gs, (match, content) => {
+        return `\`\`\`\n${content}\n\`\`\``;
+    });
+
+    result = result.replace(/<code>(.*?)<\/code>/g, (match, content) => {
+        return `\`${content}\``;
+    });
+
+    result = result.replace(/<b>(.*?)<\/b>/g, (match, content) => {
+        return `*${content}*`;
+    });
+
+    result = result.replace(/<i>(.*?)<\/i>/g, (match, content) => {
+        return `_${content}_`;
+    });
+
+    result = result.replace(/<[^>]*>/g, '');
+
+    // Protect code blocks and inline code from escaping
+    const protectedParts = [];
+    let partIndex = 0;
+
+    result = result.replace(/```[\s\S]*?```|`[^`]*`/g, (match) => {
+        const placeholder = `__PROTECTED_${partIndex}__`;
+        protectedParts[partIndex] = match;
+        partIndex++;
+        return placeholder;
+    });
+
+    // Escape all special MarkdownV2 characters
+    result = result.replace(/([_*\[\]()~>#+=|{}.!-])/g, '\\$1');
+
+    // Restore protected parts
+    protectedParts.forEach((part, index) => {
+        result = result.replace(`__PROTECTED_${index}__`, part);
+    });
+
+    // Fix formatting markers - unescape them so they work as formatting
+    result = result.replace(/\\\*/g, '*');
+    result = result.replace(/\\_/g, '_');
+    result = result.replace(/\\`/g, '`');
+
+    return result;
+}
+
+function escapeMarkdownV2(text) {
+    let result = '';
+    let inCodeBlock = false;
+    let inInlineCode = false;
+    let inBold = false;
+    let inItalic = false;
+    let i = 0;
+
+    while (i < text.length) {
+        const char = text[i];
+        const nextChar = text[i + 1];
+        const prevChar = text[i - 1];
+
+        if (char === '`' && nextChar === '`' && text[i + 2] === '`' && !inInlineCode) {
+            inCodeBlock = !inCodeBlock;
+            result += '```';
+            i += 3;
+            continue;
+        }
+
+        if (char === '`' && !inCodeBlock && prevChar !== '\\') {
+            inInlineCode = !inInlineCode;
+            result += char;
+            i++;
+            continue;
+        }
+
+        if (inCodeBlock || inInlineCode) {
+            result += char;
+            i++;
+            continue;
+        }
+
+        if (char === '*' && prevChar !== '\\') {
+            inBold = !inBold;
+            result += char;
+            i++;
+            continue;
+        }
+
+        if (char === '_' && prevChar !== '\\') {
+            inItalic = !inItalic;
+            result += char;
+            i++;
+            continue;
+        }
+
+        const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+
+        if (specialChars.includes(char) && !inBold && !inItalic) {
+            result += '\\' + char;
+        } else {
+            result += char;
+        }
+
+        i++;
+    }
+
+    return result;
+ }
+
 bot.on('inline_query', async (ctx) => {
     const query = ctx.inlineQuery.query;
 
@@ -418,58 +530,6 @@ bot.action(/convo_(\d+)/, async (ctx) => {
     }
 });
 
-bot.action('save_card_yes', async (ctx) => {
-    try {
-        const userId = prefix + ctx.from.id;
-
-        await ensureConnection();
-        const user = await getUser(userId);
-        const state = await PaymentState.findOne({ userId });
-
-        if (!user || !state) {
-            return ctx.reply('Session expired. Please start again with /payments.');
-        }
-
-        // Update payment state
-        state.saveCard = true;
-        state.step = 'processing';
-        await state.save();
-
-        await ctx.answerCbQuery();
-        await processCardPayment(ctx, user, state);
-    } catch (error) {
-        console.error('Error handling save card preference:', error);
-        await ctx.answerCbQuery('An error occurred');
-        await ctx.reply('Sorry, something went wrong. Please try again.');
-    }
-});
-
-bot.action('save_card_no', async (ctx) => {
-    try {
-        const userId = prefix + ctx.from.id;
-
-        await ensureConnection();
-        const user = await getUser(userId);
-        const state = await PaymentState.findOne({ userId });
-
-        if (!user || !state) {
-            return ctx.reply('Session expired. Please start again with /payments.');
-        }
-
-        // Update payment state
-        state.saveCard = false;
-        state.step = 'processing';
-        await state.save();
-
-        await ctx.answerCbQuery();
-        await processCardPayment(ctx, user, state);
-    } catch (error) {
-        console.error('Error handling save card preference:', error);
-        await ctx.answerCbQuery('An error occurred');
-        await ctx.reply('Sorry, something went wrong. Please try again.');
-    }
-});
-
 bot.action(/^verify_(.+)$/, async (ctx) => {
     try {
         await ensureConnection();
@@ -504,6 +564,61 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
         console.error('Error in verify payment button handler:', error);
         await ctx.answerCbQuery('An error occurred while verifying payment', true);
         await ctx.reply('Sorry, something went wrong with payment verification. Please try again or contact support.');
+    }
+});
+
+// Cancel request handler
+bot.action(/^cancel_(.+)$/, async (ctx) => {
+    try {
+        const requestId = ctx.match[1];
+        const userId = prefix + ctx.from.id;
+
+        await ensureConnection();
+
+        // Find the request
+        const request = await RequestState.findById(requestId);
+
+        if (!request) {
+            await ctx.answerCbQuery('Request not found or already completed.', true);
+            return;
+        }
+
+        if (request.userId !== userId) {
+            await ctx.answerCbQuery('This is not your request.', true);
+            return;
+        }
+
+        if (request.status !== 'processing') {
+            await ctx.answerCbQuery('This request is already completed or cancelled.', true);
+            return;
+        }
+
+        // Mark as cancelled
+        await request.updateOne({ status: 'cancelled' });
+
+        // Refund tokens
+        const user = await getUser(userId);
+        if (user) {
+            const refundAmount = request.tokenCost || 1;
+            await updateUser(userId, { tokens: user.tokens + refundAmount });
+            console.log(`💰 Refunded ${refundAmount} token(s) to user for cancellation`);
+        }
+
+        // Answer callback and delete thinking message
+        await ctx.answerCbQuery('Request cancelled');
+
+        try {
+            await ctx.deleteMessage();
+        } catch (deleteError) {
+            console.log('Could not delete thinking message:', deleteError.message);
+        }
+
+        // Send cancellation confirmation
+        await ctx.reply('You cancelled the prompt. You can try again.');
+
+    } catch (error) {
+        console.error('Error handling cancel request:', error);
+        await ctx.answerCbQuery('An error occurred while cancelling', true);
     }
 });
 
@@ -547,7 +662,14 @@ bot.on(message('photo'), async (ctx) => {
         createdAt: new Date()
     });
 
-    const thinkingMsg = await ctx.reply('Thinking...');
+    // CHANGE: Add cancel button to thinking message
+    const thinkingMsg = await ctx.reply('Thinking...', {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '❌ Cancel', callback_data: `cancel_${requestState._id}` }]
+            ]
+        }
+    });
 
     try {
         // Parallel operations
@@ -602,7 +724,7 @@ bot.on(message('photo'), async (ctx) => {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply(claudeAnswer, { parse_mode: 'HTML' })
+            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' })
                 .then(() => console.log('📤 Image response sent to user'))
         ]);
     } catch (error) {
@@ -679,7 +801,13 @@ bot.on(message('document'), async (ctx) => {
         createdAt: new Date()
     });
 
-    const thinkingMsg = await ctx.reply('Thinking...');
+    const thinkingMsg = await ctx.reply('Thinking...', {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]
+            ]
+        }
+    });
 
     try {
         await Promise.all([
@@ -760,7 +888,7 @@ bot.on(message('document'), async (ctx) => {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply(claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Document response sent to user'))
+            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Document response sent to user'))
         ]);
 
     } catch (error) {
@@ -1049,7 +1177,14 @@ async function handleRegularMessage(ctx, userId) {
         createdAt: new Date()
     });
 
-    const thinkingMsg = await ctx.reply('Thinking...');
+    // CHANGE: Add cancel button to thinking message
+    const thinkingMsg = await ctx.reply('Thinking...', {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '❌ Cancel', callback_data: `cancel_${requestState._id}` }]
+            ]
+        }
+    });
 
     try {
         console.log('📝 Text prompt sent to Claude');
@@ -1086,7 +1221,7 @@ async function handleRegularMessage(ctx, userId) {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            ctx.reply(claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Message sent to user'))
+            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Message sent to user'))
         ]);
 
         // Check streak reward
@@ -1416,6 +1551,125 @@ export function setupWebhook(url) {
         .catch(error => {
             console.error('Error setting webhook:', error);
         });
+}
+
+/* === Message Splitting Utilities === */
+
+function splitMessage(text, maxLength = 4096) {
+    if (!text || text.length <= maxLength) {
+        return [text];
+    }
+
+    const chunks = [];
+    let currentChunk = '';
+
+    // Split by paragraphs first (double newlines)
+    const paragraphs = text.split('\n\n');
+
+    for (let i = 0; i < paragraphs.length; i++) {
+        const paragraph = paragraphs[i];
+
+        // If adding this paragraph would exceed the limit
+        if (currentChunk.length + paragraph.length + 2 > maxLength) {
+            // If we have content in current chunk, save it
+            if (currentChunk.trim()) {
+                chunks.push(currentChunk.trim());
+                currentChunk = '';
+            }
+
+            // If the paragraph itself is too long, split it by sentences
+            if (paragraph.length > maxLength) {
+                const sentences = paragraph.split(/(?<=[.!?])\s+/);
+
+                for (const sentence of sentences) {
+                    if (currentChunk.length + sentence.length + 1 > maxLength) {
+                        if (currentChunk.trim()) {
+                            chunks.push(currentChunk.trim());
+                            currentChunk = '';
+                        }
+
+                        // If sentence is still too long, split by words
+                        if (sentence.length > maxLength) {
+                            const words = sentence.split(' ');
+
+                            for (const word of words) {
+                                if (currentChunk.length + word.length + 1 > maxLength) {
+                                    if (currentChunk.trim()) {
+                                        chunks.push(currentChunk.trim());
+                                        currentChunk = '';
+                                    }
+
+                                    // If word is still too long, force split
+                                    if (word.length > maxLength) {
+                                        for (let j = 0; j < word.length; j += maxLength) {
+                                            chunks.push(word.slice(j, j + maxLength));
+                                        }
+                                    } else {
+                                        currentChunk = word;
+                                    }
+                                } else {
+                                    currentChunk += (currentChunk ? ' ' : '') + word;
+                                }
+                            }
+                        } else {
+                            currentChunk = sentence;
+                        }
+                    } else {
+                        currentChunk += (currentChunk ? ' ' : '') + sentence;
+                    }
+                }
+            } else {
+                currentChunk = paragraph;
+            }
+        } else {
+            currentChunk += (currentChunk ? '\n\n' : '') + paragraph;
+        }
+    }
+
+    // Add any remaining content
+    if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+    }
+
+    return chunks.filter(chunk => chunk.trim().length > 0);
+}
+
+async function sendLongMessage(ctx, text, options = {}) {
+    const chunks = splitMessage(text);
+
+    if (chunks.length === 1) {
+        const formattedText = formatForMarkdownV2(chunks[0]);
+        return await ctx.reply(formattedText, {
+            ...options,
+            parse_mode: 'MarkdownV2'
+        });
+    }
+
+    const messages = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+        let messageText = formatForMarkdownV2(chunks[i]);
+
+        if (i === 0 && chunks.length > 1) {
+            messageText += '\n\n📄 _\\(continued\\.\\.\\.\\)_';
+        } else if (i === chunks.length - 1) {
+            messageText = `📄 _\\(continued from above\\)_\n\n${messageText}`;
+        } else {
+            messageText = `📄 _\\(continued from above\\)_\n\n${messageText}\n\n📄 _\\(continued\\.\\.\\.\\)_`;
+        }
+
+        const sentMessage = await ctx.reply(messageText, {
+            ...options,
+            parse_mode: 'MarkdownV2'
+        });
+        messages.push(sentMessage);
+
+        if (i < chunks.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    }
+
+    return messages;
 }
 
 /* === Serverless Handler === */
