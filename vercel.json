@@ -1,11 +1,25 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "api/**/*.js",
-      "use": "@vercel/node"
+  "functions": {
+    "api/tg.js": {
+      "maxDuration": 60
+    },
+    "api/wa.js": {
+      "maxDuration": 30
+    },
+    "api/analytics-weekly.js": {
+      "maxDuration": 30
+    },
+    "api/analytics-monthly.js": {
+      "maxDuration": 30
+    },
+    "api/daily-reminders.js": {
+      "maxDuration": 30
+    },
+    "api/daily-resets.js": {
+      "maxDuration": 30
     }
-  ],
+  },
   "routes": [
     {
       "src": "/api/tg",
