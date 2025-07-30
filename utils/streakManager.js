@@ -89,7 +89,7 @@ export async function checkStreakReward(userId) {
                 // Send reward message
                 const telegramId = userId.replace('tg-', '');
                 const firstName = user.name.split(' ')[0];
-                const message = `Hi ${firstName}, we're glad Florence* has helped you learn something new this week. Here are 10 tokens* to support your continued improvement 🩵`;
+                const message = `Hi ${firstName}, we're glad Florence* has helped you learn something new this week. Here are 10 tokens* to support your continued improvement`;
 
                 try {
                     await bot.telegram.sendMessage(telegramId, message);

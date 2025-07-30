@@ -52,8 +52,8 @@ async function sendMonthlyAnalytics() {
             });
         }
 
-        let message = `📊 *Florence\\* Analytics \\(this month\\)*\n\n`;
-        message += `👥 *Users*\n`;
+        let message = `*Florence\\* Analytics \\(this month\\)*\n\n`;
+        message += `*Users*\n`;
         message += `• Florence\\* has ${totalUsers} users now `;
         if (newUsers > 0) {
             message += `\\(\\+${newUsers} new users this month\\)\n`;
@@ -61,7 +61,7 @@ async function sendMonthlyAnalytics() {
             message += `\\(no new users this month\\)\n`;
         }
 
-        message += `\n💰 *Revenue*\n`;
+        message += `\n*Revenue*\n`;
         if (totalRevenue > 0) {
             message += `• Total revenue: ₦${totalRevenue.toLocaleString()} from ${uniqueCustomers} customer${uniqueCustomers !== 1 ? 's' : ''}\n`;
             message += `• Average revenue per paying customer: ₦${averageRevenuePerCustomer.toLocaleString()}\n`;
@@ -71,15 +71,18 @@ async function sendMonthlyAnalytics() {
         }
 
         if (topSpendersWithNames.length > 0) {
-            message += `\n🏆 *Top Spenders This Month*\n`;
+            message += `\n*Top Spenders This Month*\n`;
             topSpendersWithNames.forEach((spender, index) => {
                 message += `${index + 1}\\. ${spender.name} \\- ₦${spender.amount.toLocaleString()} \\(${spender.transactions} transaction${spender.transactions !== 1 ? 's' : ''}\\)\n`;
             });
         }
 
-        await bot.telegram.sendMessage(process.env.ADMIN_TG_ID, message, {
-            parse_mode: 'MarkdownV2'
-        });
+        const telegramIds = ['7258562406', '489613046'];
+        for (const chatId of telegramIds) {
+            await bot.telegram.sendMessage(chatId, message, {
+                parse_mode: 'MarkdownV2'
+            });
+        }
 
         return { totalUsers, newUsers, totalRevenue, uniqueCustomers };
 

@@ -56,11 +56,11 @@ export default async function handler(req, res) {
             },
             webhookUrl: process.env.WEBHOOK_URL || 'Not configured',
             envVars: {
-                BOT_TOKEN: process.env.BOT_TOKEN ? '✓ Present' : '✗ Missing',
-                MONGODB_URI: process.env.MONGODB_URI ? '✓ Present' : '✗ Missing',
-                WEBHOOK_URL: process.env.WEBHOOK_URL ? '✓ Present' : '✗ Missing',
-                CLAUDE_API_KEY: process.env.CLAUDE_API_KEY ? '✓ Present' : '✗ Missing',
-                PAYSTACK_SK_TEST: process.env.PAYSTACK_SK_LIVE ? '✓ Present' : '✗ Missing',
+                BOT_TOKEN: process.env.BOT_TOKEN ? 'Present' : 'Missing',
+                MONGODB_URI: process.env.MONGODB_URI ? 'Present' : 'Missing',
+                WEBHOOK_URL: process.env.WEBHOOK_URL ? 'Present' : 'Missing',
+                CLAUDE_API_KEY: process.env.CLAUDE_API_KEY ? 'Present' : 'Missing',
+                PAYSTACK_SK_TEST: process.env.PAYSTACK_SK_LIVE ? 'Present' : 'Missing',
             }
         });
     } catch (error) {

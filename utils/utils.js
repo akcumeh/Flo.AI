@@ -40,18 +40,18 @@ export async function updateUser(id, updates) {
 
 // Claude API calls
 export async function askClaude(user, prompt) {
-    console.log('📝 Text prompt sent to Claude');
+    console.log('Text prompt sent to Claude');
     const convo = user.convoHistory || [];
     const formattedMessages = formatMessagesForClaude(convo, prompt);
 
     const response = await sendTextMessage(formattedMessages);
 
-    console.log('✅ Claude response received');
+    console.log('Claude response received');
     return response.replace(/^\[Florence\*\]\s*/, '');
 }
 
 export async function askClaudeWithAtt(user, b64, fileType, prompt) {
-    console.log('📎 Image/document prompt sent to Claude');
+    console.log('Image/document prompt sent to Claude');
 
     const newMessageContent = createAttachmentMsg(b64, fileType, prompt);
     const convo = user.convoHistory || [];
@@ -59,7 +59,7 @@ export async function askClaudeWithAtt(user, b64, fileType, prompt) {
 
     const response = await sendMessageWithAttachment(formattedMessages);
 
-    console.log('✅ Claude response received');
+    console.log('Claude response received');
     return response.replace(/^\[Florence\*\]\s*/, '');
 }
 

@@ -148,15 +148,15 @@ export function getMessageContent(ctx) {
  */
 export async function downloadTelegramFile(bot, fileId) {
     try {
-        console.log(`📥 Starting download for file: ${fileId}`);
+        console.log(`Starting download for file: ${fileId}`);
 
         // Get file info first
         const file = await bot.telegram.getFile(fileId);
-        console.log(`📄 File info: ${file.file_path}, size: ${file.file_size} bytes`);
+        console.log(`File info: ${file.file_path}, size: ${file.file_size} bytes`);
 
         // Use the file path directly with bot token
         const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
-        console.log(`🔗 Downloading from: ${fileUrl.replace(process.env.BOT_TOKEN, 'BOT_TOKEN')}`);
+        console.log(`Downloading from: ${fileUrl.replace(process.env.BOT_TOKEN, 'BOT_TOKEN')}`);
 
         // Download with improved settings (timeout removed)
         const response = await fetch(fileUrl, {
@@ -171,12 +171,12 @@ export async function downloadTelegramFile(bot, fileId) {
         }
 
         const buffer = await response.arrayBuffer();
-        console.log(`✅ Downloaded ${buffer.byteLength} bytes`);
+        console.log(`Downloaded ${buffer.byteLength} bytes`);
 
         return Buffer.from(buffer);
 
     } catch (error) {
-        console.error('❌ Download error:', error);
+        console.error('Download error:', error);
         throw new Error(`File download failed: ${error.message}`);
     }
 }

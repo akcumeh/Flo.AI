@@ -23,115 +23,13 @@ const prefix = 'tg-';
 
 /* === MarkdownV2 Formatter === */
 function formatForMarkdownV2(text) {
-    if (!text) return text;
-
-    let result = text;
-
-    result = result.replace(/<pre>(.*?)<\/pre>/gs, (match, content) => {
-        return `\`\`\`\n${content}\n\`\`\``;
-    });
-
-    result = result.replace(/<code>(.*?)<\/code>/g, (match, content) => {
-        return `\`${content}\``;
-    });
-
-    result = result.replace(/<b>(.*?)<\/b>/g, (match, content) => {
-        return `*${content}*`;
-    });
-
-    result = result.replace(/<i>(.*?)<\/i>/g, (match, content) => {
-        return `_${content}_`;
-    });
-
-    result = result.replace(/<[^>]*>/g, '');
-
-    // Protect code blocks and inline code from escaping
-    const protectedParts = [];
-    let partIndex = 0;
-
-    result = result.replace(/```[\s\S]*?```|`[^`]*`/g, (match) => {
-        const placeholder = `__PROTECTED_${partIndex}__`;
-        protectedParts[partIndex] = match;
-        partIndex++;
-        return placeholder;
-    });
-
-    // Escape all special MarkdownV2 characters
-    result = result.replace(/([_*\[\]()~>#+=|{}.!-])/g, '\\$1');
-
-    // Restore protected parts
-    protectedParts.forEach((part, index) => {
-        result = result.replace(`__PROTECTED_${index}__`, part);
-    });
-
-    // Fix formatting markers - unescape them so they work as formatting
-    result = result.replace(/\\\*/g, '*');
-    result = result.replace(/\\_/g, '_');
-    result = result.replace(/\\`/g, '`');
-
-    return result;
-}
-
-function escapeMarkdownV2(text) {
-    let result = '';
-    let inCodeBlock = false;
-    let inInlineCode = false;
-    let inBold = false;
-    let inItalic = false;
-    let i = 0;
-
-    while (i < text.length) {
-        const char = text[i];
-        const nextChar = text[i + 1];
-        const prevChar = text[i - 1];
-
-        if (char === '`' && nextChar === '`' && text[i + 2] === '`' && !inInlineCode) {
-            inCodeBlock = !inCodeBlock;
-            result += '```';
-            i += 3;
-            continue;
-        }
-
-        if (char === '`' && !inCodeBlock && prevChar !== '\\') {
-            inInlineCode = !inInlineCode;
-            result += char;
-            i++;
-            continue;
-        }
-
-        if (inCodeBlock || inInlineCode) {
-            result += char;
-            i++;
-            continue;
-        }
-
-        if (char === '*' && prevChar !== '\\') {
-            inBold = !inBold;
-            result += char;
-            i++;
-            continue;
-        }
-
-        if (char === '_' && prevChar !== '\\') {
-            inItalic = !inItalic;
-            result += char;
-            i++;
-            continue;
-        }
-
-        const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
-
-        if (specialChars.includes(char) && !inBold && !inItalic) {
-            result += '\\' + char;
-        } else {
-            result += char;
-        }
-
-        i++;
+    // Debug logging to see what's coming in
+    if (text && text.includes('O(1)')) {
+        console.log('DEBUG - Input text contains O(1):', text.substring(0, 100));
     }
-
-    return result;
- }
+    // Now using regular Markdown, no escaping needed
+    return text || '';
+}
 
 bot.on('inline_query', async (ctx) => {
     const query = ctx.inlineQuery.query;
@@ -431,7 +329,7 @@ bot.command('research', async (ctx) => {
 });
 
 bot.command('feedback', async (ctx) => {
-    ctx.reply(`Enjoying Florence*?\n\nEven if you absolutely hate it 😔, please let us know:\n\nhttps://forms.gle/SwhApkszXZJGcRyP7\n\nYour feedback is greatly appreciated and helps us improve Florence*. Thank you 🩵`)
+    ctx.reply(`Enjoying Florence*?\n\nEven if you absolutely hate it, please let us know:\n\nhttps://forms.gle/SwhApkszXZJGcRyP7\n\nYour feedback is greatly appreciated and helps us improve Florence*. Thank you for your input.`)
 });
 
 bot.command('help', async (ctx) => {
@@ -601,7 +499,7 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
         if (user) {
             const refundAmount = request.tokenCost || 1;
             await updateUser(userId, { tokens: user.tokens + refundAmount });
-            console.log(`💰 Refunded ${refundAmount} token(s) to user for cancellation`);
+            console.log(`Refunded ${refundAmount} token(s) to user for cancellation`);
         }
 
         // Answer callback and delete thinking message
@@ -666,7 +564,7 @@ bot.on(message('photo'), async (ctx) => {
     const thinkingMsg = await ctx.reply('Thinking...', {
         reply_markup: {
             inline_keyboard: [
-                [{ text: '❌ Cancel', callback_data: `cancel_${requestState._id}` }]
+                [{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]
             ]
         }
     });
@@ -724,20 +622,20 @@ bot.on(message('photo'), async (ctx) => {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' })
-                .then(() => console.log('📤 Image response sent to user'))
+            sendLongMessage(ctx, claudeAnswer)
+                .then(() => console.log('Image response sent to user'))
         ]);
     } catch (error) {
-        console.error('❌ Error processing photo:', error);
+        console.error('Error processing photo:', error);
 
         try {
             const currentUser = await getUser(userId);
             if (currentUser) {
                 await updateUser(userId, { tokens: currentUser.tokens + 2 }); // Refund 2 tokens
-                console.log('💰 Refunded 2 tokens to user');
+                console.log('Refunded 2 tokens to user');
             }
         } catch (refundError) {
-            console.error('❌ Error refunding tokens:', refundError);
+            console.error('Error refunding tokens:', refundError);
         }
 
         await Promise.all([
@@ -749,7 +647,7 @@ bot.on(message('photo'), async (ctx) => {
 });
 
 bot.on(message('document'), async (ctx) => {
-    console.log('📄 Document upload received:', {
+    console.log('Document upload received:', {
         userId: prefix + ctx.from.id,
         fileName: ctx.message.document.file_name,
         mimeType: ctx.message.document.mime_type,
@@ -816,14 +714,14 @@ bot.on(message('document'), async (ctx) => {
             updateUserStreak(userId)
         ]);
 
-        console.log('📥 Downloading document...');
+        console.log('Downloading document...');
         const fileBuffer = await downloadTelegramFile(bot, fileId);
-        console.log(`📄 Document downloaded: ${fileBuffer.length} bytes`);
+        console.log(`Document downloaded: ${fileBuffer.length} bytes`);
 
         const currentRequest = await RequestState.findById(requestState._id);
         if (!currentRequest || currentRequest.status !== 'processing') return;
 
-        console.log('📄 Sending document to Claude...');
+        console.log('Sending document to Claude...');
 
         const claudeAnswer = await askClaudeWithAtt(
             user,
@@ -831,7 +729,7 @@ bot.on(message('document'), async (ctx) => {
             ['document', 'application/pdf'],
             caption
         );
-        console.log('✅ Claude response received for document');
+        console.log('Claude response received for document');
 
         const finalRequest = await RequestState.findById(requestState._id);
         if (!finalRequest || finalRequest.status !== 'processing') return;
@@ -867,7 +765,7 @@ bot.on(message('document'), async (ctx) => {
                     content: claudeAnswer
                 }
             ];
-            console.log(`📚 Document stored in conversation history (${fileSizeInMB.toFixed(2)}MB)`);
+            console.log(`Document stored in conversation history (${fileSizeInMB.toFixed(2)}MB)`);
         } else {
             // Just store text reference for large files
             newConvoHistory = [
@@ -881,28 +779,28 @@ bot.on(message('document'), async (ctx) => {
                     content: claudeAnswer
                 }
             ];
-            console.log(`📚 Large document reference stored (${fileSizeInMB.toFixed(2)}MB)`);
+            console.log(`Large document reference stored (${fileSizeInMB.toFixed(2)}MB)`);
         }
 
         await Promise.all([
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Document response sent to user'))
+            sendLongMessage(ctx, claudeAnswer).then(() => console.log('Document response sent to user'))
         ]);
 
     } catch (error) {
-        console.error('❌ Error processing document:', error);
+        console.error('Error processing document:', error);
 
         // Always refund tokens on any error
         try {
             const currentUser = await getUser(userId);
             if (currentUser) {
                 await updateUser(userId, { tokens: currentUser.tokens + 2 }); // Refund 2 tokens
-                console.log('💰 Refunded 2 tokens to user');
+                console.log('Refunded 2 tokens to user');
             }
         } catch (refundError) {
-            console.error('❌ Error refunding tokens:', refundError);
+            console.error('Error refunding tokens:', refundError);
         }
 
         // Determine error message based on error type
@@ -932,10 +830,12 @@ bot.on('message', async (ctx) => {
     if (ctx.message.text?.startsWith('/')) return;
 
     try {
+        console.log('Processing message from user:', ctx.from.id, 'Message:', ctx.message.text);
         const userId = prefix + ctx.from.id;
         const messageId = ctx.message.message_id;
 
         await ensureConnection();
+        console.log('✅ Database connected successfully');
 
         // Add this improved check for duplicate processing
         const existingRequest = await RequestState.findOne({
@@ -944,12 +844,15 @@ bot.on('message', async (ctx) => {
         });
 
         if (existingRequest) {
-            console.log(`Message ${messageId} already being processed or processed`);
+            console.log(`❌ Message ${messageId} already being processed or processed`);
             return;
         }
+        console.log('✅ Message is new, proceeding with processing');
 
         // Check if this is a payment flow message
+        console.log('🔍 Checking for payment state...');
         const paymentState = await PaymentState.findOne({ userId });
+        console.log('💳 Payment state:', paymentState ? 'Found' : 'None');
 
         if (paymentState && paymentState.step !== 'init') {
             await handlePaymentMessage(ctx, userId, paymentState);
@@ -957,7 +860,9 @@ bot.on('message', async (ctx) => {
         }
 
         // Handle regular message
+        console.log('📝 Handling regular message...');
         await handleRegularMessage(ctx, userId);
+        console.log('✅ Regular message handling completed');
     } catch (error) {
         console.error('Error in message handler:', error);
         await ctx.reply('Sorry, something went wrong. Please try again.');
@@ -1025,7 +930,7 @@ async function processPayment(ctx, user, state) {
                 {
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: '🔄 Verify Payment', callback_data: `verify_${paymentResult.reference}` }]
+                            [{ text: 'Verify Payment', callback_data: `verify_${paymentResult.reference}` }]
                         ]
                     }
                 }
@@ -1069,7 +974,7 @@ async function performVerification(ctx, user, reference, processingMsg) {
             }
 
             await ctx.reply(
-                `⚠️ Already Verified\n\n` +
+                `Already Verified\n\n` +
                 `This payment reference has already been used.\n` +
                 `The tokens were previously added to your account.\n\n` +
                 `Current balance: ${user.tokens} tokens`
@@ -1103,7 +1008,7 @@ async function performVerification(ctx, user, reference, processingMsg) {
             });
 
             await ctx.reply(
-                `✅ Payment Verified!\n\n` +
+                `Payment Verified!\n\n` +
                 `Added: ${verificationResult.tokens} tokens\n` +
                 `New balance: ${newTokens} tokens\n\n` +
                 `Thank you for your payment!`
@@ -1116,14 +1021,14 @@ async function performVerification(ctx, user, reference, processingMsg) {
         } else if (verificationResult.isPending) {
             // Special case for bank transfers
             await ctx.reply(
-                `🏦 Bank Transfer\n\n` +
+                `Bank Transfer\n\n` +
                 `${verificationResult.message}`
             );
             return { success: false };
         } else {
             // All other failure cases
             await ctx.reply(
-                `❌ Verification Failed\n\n` +
+                `Verification Failed\n\n` +
                 `${verificationResult.message}`
             );
             return { success: false };
@@ -1139,7 +1044,7 @@ async function performVerification(ctx, user, reference, processingMsg) {
         }
 
         await ctx.reply(
-            `❌ Error\n\n` +
+            `Error\n\n` +
             `Unable to verify payment at this time.\n` +
             `Please try again later or contact support.`
         );
@@ -1148,8 +1053,11 @@ async function performVerification(ctx, user, reference, processingMsg) {
 }
 
 async function handleRegularMessage(ctx, userId) {
+    console.log('📝 Starting handleRegularMessage for user:', userId);
     const user = await getUser(userId);
+    console.log('👥 User found:', user ? 'Yes' : 'No', user ? `(tokens: ${user.tokens})` : '');
     if (!user) {
+        console.log('❌ No user found, sending start message');
         return ctx.reply('You need to start the bot first. Please send /start.');
     }
 
@@ -1158,12 +1066,14 @@ async function handleRegularMessage(ctx, userId) {
         updateUserStreak(userId),
         user.tokens < 1 ? Promise.reject(new Error('insufficient_tokens')) : Promise.resolve()
     ]).catch(err => {
+        console.log('❌ Error in token/streak check:', err.message);
         if (err.message === 'insufficient_tokens') {
             ctx.reply('You don\'t have enough tokens. Send /payments to top up.');
             return [null];
         }
         throw err;
     });
+    console.log('✅ Token and streak checks passed');
 
     if (!streakResult) return;
 
@@ -1181,30 +1091,35 @@ async function handleRegularMessage(ctx, userId) {
     const thinkingMsg = await ctx.reply('Thinking...', {
         reply_markup: {
             inline_keyboard: [
-                [{ text: '❌ Cancel', callback_data: `cancel_${requestState._id}` }]
+                [{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]
             ]
         }
     });
+    console.log('✅ Thinking message sent, ID:', thinkingMsg.message_id);
 
     try {
-        console.log('📝 Text prompt sent to Claude');
+        console.log('🤖 Preparing to call Claude API...');
 
         // Save request state and deduct token
         await Promise.all([
             requestState.save(),
             updateUser(userId, { tokens: user.tokens - 1 })
         ]);
+        console.log('✅ Request state saved and token deducted');
 
         // Check if cancelled
         const currentRequest = await RequestState.findById(requestState._id);
         if (!currentRequest || currentRequest.status !== 'processing') return;
 
         // Get fresh user data with current conversation history
+        console.log('🔄 Getting fresh user data...');
         const freshUser = await getUser(userId);
+        console.log('✅ Fresh user data retrieved');
 
         // Get Claude response with current conversation history
+        console.log('🤖 Calling Claude API with message:', ctx.message.text?.substring(0, 50) + '...');
         const claudeAnswer = await askClaude(freshUser, ctx.message.text);
-        console.log('✅ Claude response received');
+        console.log('✅ Claude response received, length:', claudeAnswer?.length || 0);
 
         // Final cancellation check
         const finalRequest = await RequestState.findById(requestState._id);
@@ -1221,7 +1136,7 @@ async function handleRegularMessage(ctx, userId) {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Message sent to user'))
+            sendLongMessage(ctx, claudeAnswer).then(() => console.log('Message sent to user'))
         ]);
 
         // Check streak reward
@@ -1230,17 +1145,17 @@ async function handleRegularMessage(ctx, userId) {
         }
 
     } catch (error) {
-        console.error('❌ Error processing message:', error);
+        console.error('Error processing message:', error);
 
         // Always refund tokens on any error
         try {
             const currentUser = await getUser(userId);
             if (currentUser) {
                 await updateUser(userId, { tokens: currentUser.tokens + 1 }); // Refund 1 token
-                console.log('💰 Refunded 1 token to user');
+                console.log('Refunded 1 token to user');
             }
         } catch (refundError) {
-            console.error('❌ Error refunding tokens:', refundError);
+            console.error('Error refunding tokens:', refundError);
         }
 
         await Promise.all([
@@ -1277,7 +1192,7 @@ async function processCardPayment(ctx, user, state) {
                 {
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: '🔄 Verify Payment', callback_data: `verify_${paymentResult.reference}` }]
+                            [{ text: 'Verify Payment', callback_data: `verify_${paymentResult.reference}` }]
                         ]
                     }
                 }
@@ -1378,7 +1293,10 @@ async function processMediaGroup(mediaGroupId, userId) {
                 // Inside processMediaGroup function, modify the response sending:
                 console.log('Claude response:', claudeAnswer);
                 try {
-                    await bot.telegram.sendMessage(telegramId, claudeAnswer);
+                    const formattedResponse = formatForMarkdownV2(claudeAnswer);
+                    await bot.telegram.sendMessage(telegramId, formattedResponse, {
+                        parse_mode: 'Markdown'
+                    });
                     console.log('Response sent successfully');
                 } catch (sendError) {
                     console.error('Error sending response:', sendError);
@@ -1514,7 +1432,7 @@ router.post('/payment/callback', async (req, res) => {
                 const telegramId = userId.substring(3);
                 await bot.telegram.sendMessage(
                     telegramId,
-                    `Payment verified successfully! ✅\n\n` +
+                    `Payment verified successfully!\n\n` +
                     `${transaction.tokens} tokens have been added to your account.\n\n` +
                     `You now have ${newTokens} tokens.`
                 );
@@ -1641,26 +1559,27 @@ async function sendLongMessage(ctx, text, options = {}) {
         const formattedText = formatForMarkdownV2(chunks[0]);
         return await ctx.reply(formattedText, {
             ...options,
-            parse_mode: 'MarkdownV2'
+            parse_mode: 'Markdown'
         });
     }
 
     const messages = [];
 
     for (let i = 0; i < chunks.length; i++) {
-        let messageText = formatForMarkdownV2(chunks[i]);
+        let messageText = chunks[i];
 
         if (i === 0 && chunks.length > 1) {
-            messageText += '\n\n📄 _\\(continued\\.\\.\\.\\)_';
+            messageText += '\n\n_(continued...)_';
         } else if (i === chunks.length - 1) {
-            messageText = `📄 _\\(continued from above\\)_\n\n${messageText}`;
+            messageText = `_(continued from above)_\n\n${messageText}`;
         } else {
-            messageText = `📄 _\\(continued from above\\)_\n\n${messageText}\n\n📄 _\\(continued\\.\\.\\.\\)_`;
+            messageText = `_(continued from above)_\n\n${messageText}\n\n_(continued...)_`;
         }
 
-        const sentMessage = await ctx.reply(messageText, {
+        const formattedText = formatForMarkdownV2(messageText);
+        const sentMessage = await ctx.reply(formattedText, {
             ...options,
-            parse_mode: 'MarkdownV2'
+            parse_mode: 'Markdown'
         });
         messages.push(sentMessage);
 
@@ -1676,7 +1595,7 @@ async function sendLongMessage(ctx, text, options = {}) {
 
 export default async function handler(req, res) {
     try {
-        console.log('Received webhook request from Telegram');
+        console.log('Received webhook request from Telegram:', JSON.stringify(req.body, null, 2));
 
         if (req.method !== 'POST') {
             if (req.method === 'GET') {
@@ -1695,10 +1614,10 @@ export default async function handler(req, res) {
         }
 
         await ensureConnection();
-        console.log('📡 Processing Telegram update...');
+        console.log('Processing Telegram update...');
 
         await bot.handleUpdate(req.body);
-        console.log('✅ Telegram update processed successfully');
+        console.log('Telegram update processed successfully');
 
         res.status(200).send('OK');
     } catch (error) {
