@@ -8,7 +8,7 @@ import crypto from 'crypto';
 
 const router = express.Router();
 import {
-    addUser, getUser, updateUser, askClaude, askClaudeWithAtt, walkThru
+    addUser, getUser, updateUser, askGpt, askGptWithAtt, walkThru
 } from '../utils/utils.js';
 import { downloadTelegramFile } from '../utils/getMsgContent.js';
 import { Transaction } from '../models/transactions.js';
@@ -687,7 +687,7 @@ bot.on(message('photo'), async (ctx) => {
         const currentRequest = await RequestState.findById(requestState._id);
         if (!currentRequest || currentRequest.status !== 'processing') return;
 
-        const claudeAnswer = await askClaudeWithAtt(user, b64img, ['image', 'image/jpeg'], caption);
+        const gptAnswer = await askGptWithAtt(user, b64img, ['image', 'image/jpeg'], caption);
 
         // Final check and respond
         const finalRequest = await RequestState.findById(requestState._id);
@@ -716,7 +716,7 @@ bot.on(message('photo'), async (ctx) => {
             },
             {
                 role: "assistant",
-                content: claudeAnswer
+                content: gptAnswer
             }
         ];
 
@@ -724,7 +724,7 @@ bot.on(message('photo'), async (ctx) => {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' })
+            sendLongMessage(ctx, gptAnswer, { parse_mode: 'HTML' })
                 .then(() => console.log('📤 Image response sent to user'))
         ]);
     } catch (error) {
@@ -823,15 +823,15 @@ bot.on(message('document'), async (ctx) => {
         const currentRequest = await RequestState.findById(requestState._id);
         if (!currentRequest || currentRequest.status !== 'processing') return;
 
-        console.log('📄 Sending document to Claude...');
+        console.log('📄 Sending document to GPT...');
 
-        const claudeAnswer = await askClaudeWithAtt(
+        const gptAnswer = await askGptWithAtt(
             user,
             fileBuffer.toString('base64'),
             ['document', 'application/pdf'],
             caption
         );
-        console.log('✅ Claude response received for document');
+        console.log('✅ GPT response received for document');
 
         const finalRequest = await RequestState.findById(requestState._id);
         if (!finalRequest || finalRequest.status !== 'processing') return;
@@ -864,7 +864,7 @@ bot.on(message('document'), async (ctx) => {
                 },
                 {
                     role: "assistant",
-                    content: claudeAnswer
+                    content: gptAnswer
                 }
             ];
             console.log(`📚 Document stored in conversation history (${fileSizeInMB.toFixed(2)}MB)`);
@@ -878,7 +878,7 @@ bot.on(message('document'), async (ctx) => {
                 },
                 {
                     role: "assistant",
-                    content: claudeAnswer
+                    content: gptAnswer
                 }
             ];
             console.log(`📚 Large document reference stored (${fileSizeInMB.toFixed(2)}MB)`);
@@ -888,7 +888,7 @@ bot.on(message('document'), async (ctx) => {
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Document response sent to user'))
+            sendLongMessage(ctx, gptAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Document response sent to user'))
         ]);
 
     } catch (error) {
@@ -1187,7 +1187,7 @@ async function handleRegularMessage(ctx, userId) {
     });
 
     try {
-        console.log('📝 Text prompt sent to Claude');
+        console.log('📝 Text prompt sent to GPT');
 
         // Save request state and deduct token
         await Promise.all([
@@ -1202,26 +1202,26 @@ async function handleRegularMessage(ctx, userId) {
         // Get fresh user data with current conversation history
         const freshUser = await getUser(userId);
 
-        // Get Claude response with current conversation history
-        const claudeAnswer = await askClaude(freshUser, ctx.message.text);
-        console.log('✅ Claude response received');
+        // Get GPT response with current conversation history
+        const gptAnswer = await askGpt(freshUser, ctx.message.text);
+        console.log('✅ GPT response received');
 
         // Final cancellation check
         const finalRequest = await RequestState.findById(requestState._id);
         if (!finalRequest || finalRequest.status !== 'processing') return;
 
-        // Update conversation history with both user message and Claude response
+        // Update conversation history with both user message and GPT response
         const newConvoHistory = [
             ...(freshUser.convoHistory || []),
             { role: "user", content: ctx.message.text },
-            { role: "assistant", content: claudeAnswer }
+            { role: "assistant", content: gptAnswer }
         ];
 
         await Promise.all([
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            sendLongMessage(ctx, claudeAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Message sent to user'))
+            sendLongMessage(ctx, gptAnswer, { parse_mode: 'HTML' }).then(() => console.log('📤 Message sent to user'))
         ]);
 
         // Check streak reward
@@ -1349,7 +1349,7 @@ async function processMediaGroup(mediaGroupId, userId) {
                 let prompt = mediaGroup.caption || "Analyze these images together as a group.";
                 prompt += " Please consider all images as part of a single request and provide one comprehensive response.";
 
-                // Process with Claude by sending the first image with a special prompt
+                // Process with GPT by sending the first image with a special prompt
                 // indicating more images are included in the analysis
                 const firstFile = mediaFiles[0];
 
@@ -1362,8 +1362,8 @@ async function processMediaGroup(mediaGroupId, userId) {
                 // Add the original caption from the user
                 const fullPrompt = `${fileDescription}\n${prompt}`;
 
-                // Send first image to Claude with the context about other images
-                let claudeAnswer = await askClaudeWithAtt(
+                // Send first image to GPT with the context about other images
+                let gptAnswer = await askGptWithAtt(
                     user,
                     firstFile.b64,
                     [firstFile.type, firstFile.mimeType],
@@ -1372,13 +1372,13 @@ async function processMediaGroup(mediaGroupId, userId) {
 
                 // Update the media group status
                 mediaGroup.status = 'completed';
-                mediaGroup.result = claudeAnswer;
+                mediaGroup.result = gptAnswer;
                 await mediaGroup.save();
 
                 // Inside processMediaGroup function, modify the response sending:
-                console.log('Claude response:', claudeAnswer);
+                console.log('GPT response:', gptAnswer);
                 try {
-                    await bot.telegram.sendMessage(telegramId, claudeAnswer);
+                    await bot.telegram.sendMessage(telegramId, gptAnswer);
                     console.log('Response sent successfully');
                 } catch (sendError) {
                     console.error('Error sending response:', sendError);

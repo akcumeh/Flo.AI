@@ -4,10 +4,9 @@ import {
     sendTextMessage,
     sendMessageWithAttachment,
     createAttachmentMsg,
-    formatMessagesForClaude
-} from './claudeAPI.js';
+    formatMessages
+} from './openaiAPI.js';
 
-// User Management
 export async function addUser({ id, name, tokens = 10 }) {
     await ensureConnection();
 
@@ -38,32 +37,28 @@ export async function updateUser(id, updates) {
     );
 }
 
-// Claude API calls
-export async function askClaude(user, prompt) {
-    console.log('📝 Text prompt sent to Claude');
+export async function askGpt(user, prompt) {
+    console.log('📝 Text prompt sent to GPT');
     const convo = user.convoHistory || [];
-    const formattedMessages = formatMessagesForClaude(convo, prompt);
-
+    const formattedMessages = formatMessages(convo, prompt);
     const response = await sendTextMessage(formattedMessages);
-
-    console.log('✅ Claude response received');
+    console.log('✅ GPT response received');
     return response.replace(/^\[Florence\*\]\s*/, '');
 }
 
-export async function askClaudeWithAtt(user, b64, fileType, prompt) {
-    console.log('📎 Image/document prompt sent to Claude');
-
+export async function askGptWithAtt(user, b64, fileType, prompt) {
+    console.log('📎 Image/document prompt sent to GPT');
     const newMessageContent = createAttachmentMsg(b64, fileType, prompt);
     const convo = user.convoHistory || [];
-    const formattedMessages = formatMessagesForClaude(convo, newMessageContent);
-
+    const formattedMessages = formatMessages(convo, newMessageContent);
     const response = await sendMessageWithAttachment(formattedMessages);
-
-    console.log('✅ Claude response received');
+    console.log('✅ GPT response received');
     return response.replace(/^\[Florence\*\]\s*/, '');
 }
 
-// Welcome message
+export const askClaude = askGpt;
+export const askClaudeWithAtt = askGptWithAtt;
+
 export function walkThru(tokens) {
     return `Hello there! Welcome to Florence*, the educational assistant at your fingertips.
 
