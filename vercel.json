@@ -18,6 +18,9 @@
     },
     "api/daily-resets.js": {
       "maxDuration": 30
+    },
+    "api/broadcast.js": {
+        "maxDuration": 300
     }
   },
   "routes": [
@@ -56,6 +59,10 @@
     {
       "src": "/api/daily-resets",
       "dest": "/api/daily-resets.js"
+    },
+    {
+      "src": "/api/broadcast",
+      "dest": "/api/broadcast.js"
     },
     {
       "src": "/(.*)",
