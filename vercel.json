@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/tg.js": {
-      "maxDuration": 60
+      "maxDuration": 30
     },
     "api/wa.js": {
       "maxDuration": 30
@@ -20,7 +20,7 @@
       "maxDuration": 30
     },
     "api/broadcast.js": {
-        "maxDuration": 300
+        "maxDuration": 30
     }
   },
   "routes": [
