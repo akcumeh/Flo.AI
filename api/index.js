@@ -4,13 +4,13 @@ import { ensureConnection } from '../db/connection.js';
 
 dotenv.config();
 
-await ensureConnection();
-
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Main entry point for Vercel
 export default async function handler(req, res) {
     try {
+        await ensureConnection();
+
         // Handle GET requests (e.g., health checks)
         if (req.method === 'GET') {
             return res.status(200).json({

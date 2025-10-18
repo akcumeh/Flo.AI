@@ -38,7 +38,8 @@ async function paystackRequest(endpoint, method = 'GET', data = null) {
  */
 function getNumericUserId(userId) {
     const matches = userId.match(/[^:,-]+$/);
-    return matches ? matches[0] : userId;
+    const extracted = matches ? matches[0] : userId;
+    return extracted.replace(/[^0-9]/g, '');
 }
 
 /**
@@ -70,7 +71,6 @@ export async function initializeCardPayment(user, amount, callbackUrl) {
                 amount,
                 tokens: Math.floor(amount / 100),
                 email: user.email,
-                method: 'card', // Keep this for database consistency
                 status: 'pending',
                 metadata: {
                     authorizationUrl: response.data.authorization_url

@@ -2,7 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { ensureConnection } from './db/connection.js';
 import { tg } from './api/tg.js';
-import { wa } from './api/wa.js';
+import wa from './api/wa.js';
 
 dotenv.config();
 

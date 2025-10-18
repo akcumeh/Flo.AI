@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/tg.js": {
-      "maxDuration": 60
+      "maxDuration": 30
     },
     "api/wa.js": {
       "maxDuration": 30
@@ -20,7 +20,7 @@
       "maxDuration": 30
     },
     "api/broadcast.js": {
-        "maxDuration": 300
+        "maxDuration": 30
     }
   },
   "routes": [
@@ -29,16 +29,16 @@
       "dest": "/api/tg.js"
     },
     {
+      "src": "/api/wa",
+      "dest": "/api/wa.js"
+    },
+    {
       "src": "/api/analytics-weekly",
       "dest": "/api/analytics-weekly.js"
     },
     {
       "src": "/api/analytics-monthly",
       "dest": "/api/analytics-monthly.js"
-    },
-    {
-      "src": "/api/wa",
-      "dest": "/api/wa.js"
     },
     {
       "src": "/api/debug",

@@ -12,7 +12,7 @@ const requestStateSchema = new mongoose.Schema({
         default: 1
     },
     messageId: {
-        type: Number
+        type: mongoose.Schema.Types.Mixed
     },
     status: {
         type: String,
@@ -46,7 +46,7 @@ const requestStateSchema = new mongoose.Schema({
     createdAt: {
         type: Date,
         default: Date.now,
-        expires: 86400 // Auto-delete after 24 hours
+        expires: 86400
     }
 });
 

@@ -25,8 +25,7 @@ const transactionSchema = new mongoose.Schema({
     },
     method: {
         type: String,
-        enum: ['card', 'bank_transfer'],
-        required: true
+        enum: ['card', 'bank_transfer']
     },
     status: {
         type: String,
