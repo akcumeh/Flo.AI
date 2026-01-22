@@ -1,5 +1,5 @@
 import express from 'express';
-import twilio from 'twilio';
+import axios from 'axios';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -17,14 +17,35 @@ import { initFw, verifyFw } from '../utils/flutterwave.js';
 import VerificationState from '../models/verificationState.js';
 import { Transaction } from '../models/transactions.js';
 import { RequestState, PaymentState } from '../models/serverless.js';
-import fetch from 'node-fetch';
 
 const router = express.Router();
 
-const client = twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-);
+const META_API_BASE = 'https://graph.facebook.com/v21.0';
+const PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
+const ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+
+function getMetaHeaders() {
+    return {
+        'Authorization': `Bearer ${ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+    };
+}
+
+async function sendMetaRequest(endpoint, data) {
+    try {
+        const url = `${META_API_BASE}/${endpoint}`;
+        const response = await axios.post(url, data, {
+            headers: getMetaHeaders()
+        });
+        return { success: true, data: response.data };
+    } catch (error) {
+        console.error('Meta API error:', error.response?.data || error.message);
+        return {
+            success: false,
+            error: error.response?.data?.error?.message || error.message
+        };
+    }
+}
 
 function paystackRef(url) {
     const parts = url.split('/');
@@ -109,6 +130,7 @@ function splitMessage(text, maxLength = 1600) {
 async function sendMsg(content, id) {
     try {
         const chunks = splitMessage(content);
+        const phoneNumber = id.replace('wa:', '');
 
         for (let i = 0; i < chunks.length; i++) {
             let messageText = chunks[i];
@@ -123,11 +145,19 @@ async function sendMsg(content, id) {
                 }
             }
 
-            await client.messages.create({
-                body: messageText,
-                from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                to: id
-            });
+            const result = await sendMetaRequest(
+                `${PHONE_NUMBER_ID}/messages`,
+                {
+                    messaging_product: 'whatsapp',
+                    to: phoneNumber,
+                    type: 'text',
+                    text: { body: messageText }
+                }
+            );
+
+            if (!result.success) {
+                throw new Error(result.error);
+            }
 
             if (i < chunks.length - 1) {
                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -141,27 +171,78 @@ async function sendMsg(content, id) {
     }
 }
 
-async function downloadMedia(mediaUrl) {
+async function sendTemplate(templateName, languageCode, phoneNumber, variables) {
     try {
-        const auth = Buffer.from(`${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+        const phone = phoneNumber.replace('wa:', '');
 
-        const response = await fetch(mediaUrl, {
-            headers: {
-                'Authorization': `Basic ${auth}`
+        const components = variables.length > 0 ? [{
+            type: 'body',
+            parameters: variables.map(v => ({
+                type: 'text',
+                text: v.toString()
+            }))
+        }] : [];
+
+        const result = await sendMetaRequest(
+            `${PHONE_NUMBER_ID}/messages`,
+            {
+                messaging_product: 'whatsapp',
+                to: phone,
+                type: 'template',
+                template: {
+                    name: templateName,
+                    language: { code: languageCode },
+                    components
+                }
             }
-        });
+        );
 
-        if (!response.ok) {
-            throw new Error(`Failed to download media: ${response.statusText}`);
+        if (!result.success) {
+            throw new Error(result.error);
         }
 
-        const buffer = await response.arrayBuffer();
-        return Buffer.from(buffer);
+        return { success: true };
+    } catch (error) {
+        console.error('Error sending template:', error);
+        throw error;
+    }
+}
+
+async function downloadMedia(mediaId) {
+    try {
+        const url = `${META_API_BASE}/${mediaId}`;
+
+        const metaResponse = await axios.get(url, {
+            headers: getMetaHeaders()
+        });
+
+        const mediaUrl = metaResponse.data.url;
+
+        const fileResponse = await axios.get(mediaUrl, {
+            headers: getMetaHeaders(),
+            responseType: 'arraybuffer'
+        });
+
+        return Buffer.from(fileResponse.data);
     } catch (error) {
         console.error('Error downloading media:', error);
         throw error;
     }
 }
+
+router.get('/', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode === 'subscribe' && token === process.env.META_VERIFY_TOKEN) {
+        console.log('Webhook verified successfully');
+        return res.status(200).send(challenge);
+    } else {
+        console.error('Webhook verification failed');
+        return res.status(403).send('Forbidden');
+    }
+});
 
 router.post('/', async (req, res) => {
     console.log('=== WhatsApp Webhook Received ===');
@@ -171,11 +252,43 @@ router.post('/', async (req, res) => {
     let user;
 
     try {
-        const MessageSid = req.body.MessageSid || req.body.SmsMessageSid;
-        const WaId = req.body.From;
-        const ProfileName = req.body.ProfileName || 'User';
-        const Body = req.body.Body || '';
-        const NumMedia = parseInt(req.body.NumMedia) || 0;
+        const entry = req.body.entry?.[0];
+        const change = entry?.changes?.[0];
+        const message = change?.value?.messages?.[0];
+
+        if (!message) {
+            console.log('No message in webhook, possibly a status update');
+            return res.status(200).send('OK');
+        }
+
+        const MessageSid = message.id;
+        const phoneNumber = message.from;
+        const WaId = `wa:${phoneNumber}`;
+        const ProfileName = change?.value?.contacts?.[0]?.profile?.name || 'User';
+
+        let Body = '';
+        let NumMedia = 0;
+        let mediaId = null;
+        let mediaType = null;
+
+        if (message.type === 'text') {
+            Body = message.text.body || '';
+        } else if (message.type === 'image') {
+            NumMedia = 1;
+            mediaId = message.image.id;
+            mediaType = message.image.mime_type;
+            Body = message.image.caption || '';
+        } else if (message.type === 'document') {
+            NumMedia = 1;
+            mediaId = message.document.id;
+            mediaType = message.document.mime_type;
+            Body = message.document.caption || '';
+        } else if (message.type === 'interactive') {
+            Body = message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || '';
+        } else {
+            console.log('Unsupported message type:', message.type);
+            return res.status(200).send('OK');
+        }
 
         console.log('Parsed values:', { MessageSid, WaId, ProfileName, Body, NumMedia });
 
@@ -184,7 +297,7 @@ router.post('/', async (req, res) => {
             return res.status(400).send('Missing required fields');
         }
 
-        userId = WaId.replace('whatsapp:', 'wa:');
+        userId = WaId;
 
         const existingRequest = await RequestState.findOne({
             messageId: MessageSid
@@ -214,14 +327,7 @@ router.post('/', async (req, res) => {
             console.log('User created:', user.userId);
 
             console.log('Sending welcome message with template...');
-            await client.messages.create({
-                from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                contentSid: process.env.TWILIO_MENU_SID,
-                contentVariables: {
-                    "1": user.tokens.toString()
-                },
-                to: WaId
-            });
+            await sendTemplate('main_menu_hxcc21ab7ce18151cf00d9db0ebcd3fb66', 'en', WaId, [user.tokens.toString()]);
             console.log('Welcome template sent successfully');
             return res.status(200).send('OK');
         }
@@ -239,7 +345,7 @@ router.post('/', async (req, res) => {
                 paymentState.email = email;
                 await paymentState.save();
 
-                const callbackUrl = `${process.env.WEBHOOK_URL}/wa/payment/callback`;
+                const callbackUrl = `${process.env.WEBHOOK_URL}/api/wa/payment/callback`;
 
                 const [paystackResult, fwResult] = await Promise.all([
                     initializeCardPayment({ userId, email }, 1000, callbackUrl),
@@ -260,26 +366,11 @@ router.post('/', async (req, res) => {
                     console.log('Extracted Paystack code:', psCode);
                     console.log('Extracted Flutterwave code:', fwCode);
 
-                    await client.messages.create({
-                        from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                        contentSid: process.env.TWILIO_PAYMENTS_SID,
-                        contentVariables: {
-                            "1": psCode,
-                            "2": fwCode
-                        },
-                        to: WaId
-                    });
+                    await sendTemplate('c_payments_hx8b29fa9d0918c026a673c436f18eea29', 'en', WaId, [psCode, fwCode]);
 
                     await new Promise(resolve => setTimeout(resolve, 1000));
 
-                    await client.messages.create({
-                        from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                        contentSid: process.env.TWILIO_VERIFY_SID,
-                        contentVariables: {
-                            "1": paystackResult.reference
-                        },
-                        to: WaId
-                    });
+                    await sendTemplate('ccc_verify_hx53cdb954c4d2b7cfe550c771939b4ee8', 'en', WaId, [paystackResult.reference]);
                 } else {
                     await sendMsg('Payment initialization failed. Please try again.', WaId);
                 }
@@ -294,8 +385,6 @@ router.post('/', async (req, res) => {
         }
 
         if (NumMedia > 0) {
-            const mediaUrl = req.body.MediaUrl0;
-            const mediaType = req.body.MediaContentType0;
             const caption = Body || "Analyze this image/document.";
 
             if (user.tokens < 2) {
@@ -309,7 +398,7 @@ router.post('/', async (req, res) => {
             await updateUser(userId, { tokens: user.tokens - 2 });
 
             try {
-                const mediaBuffer = await downloadMedia(mediaUrl);
+                const mediaBuffer = await downloadMedia(mediaId);
                 const b64Media = mediaBuffer.toString('base64');
 
                 let fileType;
@@ -429,12 +518,17 @@ router.post('/', async (req, res) => {
                 );
 
                 if (user.email) {
-                    const callbackUrl = `${process.env.WEBHOOK_URL}/wa/payment/callback`;
+                    const callbackUrl = `${process.env.WEBHOOK_URL}/api/wa/payment/callback`;
+                    console.log('Initializing payments for user:', userId, 'email:', user.email);
+                    console.log('Callback URL:', callbackUrl);
 
                     const [paystackResult, fwResult] = await Promise.all([
                         initializeCardPayment({ userId, email: user.email }, 1000, callbackUrl),
                         initFw({ userId, email: user.email, name: ProfileName }, 1000, callbackUrl)
                     ]);
+
+                    console.log('Paystack result:', JSON.stringify(paystackResult));
+                    console.log('Flutterwave result:', JSON.stringify(fwResult));
 
                     if (paystackResult.success && fwResult.success) {
                         existingPaymentState.paystackReference = paystackResult.reference;
@@ -451,30 +545,15 @@ router.post('/', async (req, res) => {
                         console.log('Extracted Flutterwave code:', fwCode);
 
                         try {
-                            await client.messages.create({
-                                from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                                to: WaId,
-                                contentSid: process.env.TWILIO_PAYMENTS_SID,
-                                contentVariables: {
-                                    "1": psCode,
-                                    "2": fwCode
-                                }
-                            });
+                            await sendTemplate('c_payments_hx8b29fa9d0918c026a673c436f18eea29', 'en', WaId, [psCode, fwCode]);
                             console.log('Payment template sent');
 
                             await new Promise(resolve => setTimeout(resolve, 1000));
 
-                            await client.messages.create({
-                                from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                                to: WaId,
-                                contentSid: process.env.TWILIO_VERIFY_SID,
-                                contentVariables: {
-                                    "1": paystackResult.reference
-                                }
-                            });
+                            await sendTemplate('ccc_verify_hx53cdb954c4d2b7cfe550c771939b4ee8', 'en', WaId, [paystackResult.reference]);
                             console.log('Verify template sent');
-                        } catch (twilioError) {
-                            console.error('Twilio template error:', twilioError);
+                        } catch (templateError) {
+                            console.error('Template error:', templateError);
                             await sendMsg(
                                 `Payment Links:\n\nPaystack: ${paystackResult.authorizationUrl}\n\nFlutterwave: ${fwResult.paymentLink}\n\nReference: ${paystackResult.reference}\n\nVerify with: /verify ${paystackResult.reference}`,
                                 WaId
@@ -565,14 +644,7 @@ router.post('/', async (req, res) => {
                 return res.status(200).send('OK');
 
             case '/help':
-                await client.messages.create({
-                    from: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
-                    contentSid: process.env.TWILIO_MENU_SID,
-                    contentVariables: {
-                        "1": user.tokens.toString()
-                    },
-                    to: WaId
-                });
+                await sendTemplate('main_menu_hxcc21ab7ce18151cf00d9db0ebcd3fb66', 'en', WaId, [user.tokens.toString()]);
 
                 await sendMsg(
                     `Here are the available commands:\n\n` +
@@ -692,10 +764,6 @@ router.post('/', async (req, res) => {
     }
 });
 
-router.get('/', (_req, res) => {
-    res.status(200).send('WhatsApp bot is running');
-});
-
 router.get('/payment/callback', (req, res) => {
     const reference = req.query.reference || req.query.trxref;
 
@@ -762,7 +830,7 @@ router.get('/payment/callback', (req, res) => {
                 <p>Your payment has been processed successfully. Your tokens will be added to your account shortly.</p>
                 ${reference ? `<div class="reference">Reference: ${reference}</div>` : ''}
                 <p>Please return to WhatsApp to continue using Florence*.</p>
-                <a href="https://wa.me/${process.env.TWILIO_PHONE_NUMBER?.replace('+', '')}" class="button">Close</a>
+                <a href="https://wa.me/19048335624" class="button">Close</a>
             </div>
         </body>
         </html>
@@ -780,7 +848,10 @@ export default async function handler(req, res) {
         app.use(express.json());
         app.use(router);
 
-        req.url = req.url.replace(/^\/api\/wa/, '') || '/';
+        req.url = req.url.replace(/^\/api\/wa/, '');
+        if (!req.url.startsWith('/')) {
+            req.url = '/' + req.url;
+        }
         app(req, res);
     } catch (e) {
         console.error('Handler error:', e);

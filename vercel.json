@@ -29,7 +29,7 @@
       "dest": "/api/tg.js"
     },
     {
-      "src": "/api/wa",
+      "src": "/api/wa(/.*)?",
       "dest": "/api/wa.js"
     },
     {

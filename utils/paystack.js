@@ -52,13 +52,12 @@ export async function initializeCardPayment(user, amount, callbackUrl) {
 
         const payload = {
             email: user.email || `${numericUserId}@placeholder.com`,
-            amount: amount * 100, // Paystack amount is in kobo (100 kobo = 1 Naira)
             reference,
             callback_url: callbackUrl,
             metadata: {
                 user_id: user.userId,
                 payment_type: 'token_purchase',
-                tokens: Math.floor(amount / 100) // 1000 Naira = 25 tokens
+                tokens: Math.floor(amount / 1000) * 10
             }
         };
 
