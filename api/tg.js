@@ -938,12 +938,12 @@ async function processPayment(ctx, user, state) {
 
             // Second message with just the reference for easy copying
             await ctx.reply(
-                `Reference (tap to copy):\n\`${paymentResult.reference}\``,
+                `... or copy and paste it yourself:\n\`/verify ${paymentResult.reference}\``,
                 { parse_mode: 'Markdown' }
             );
         } else {
             console.error('Payment initialization failed:', paymentResult.message);
-            await ctx.reply(`Payment initialization failed: ${paymentResult.message}`);
+            await ctx.reply('Sorry, we couldn\'t start your payment. Please try again later.');
         }
     } catch (error) {
         console.error('Error processing payment:', error);
@@ -1188,7 +1188,7 @@ async function processCardPayment(ctx, user, state) {
             // First message with payment link and button
             await ctx.reply(
                 `Please complete your payment by clicking the link below:\n\n${paymentResult.authorizationUrl}\n\n` +
-                `After payment, your tokens will be added automatically. If you don't receive a confirmation within 5 minutes, click the button below:`,
+                `After payment, click the button below:`,
                 {
                     reply_markup: {
                         inline_keyboard: [
@@ -1200,12 +1200,12 @@ async function processCardPayment(ctx, user, state) {
 
             // Second message with just the reference for easy copying
             await ctx.reply(
-                `Reference (tap to copy):\n\`${paymentResult.reference}\``,
+                `... or copy and paste it yourself:\n\`/verify ${paymentResult.reference}\``,
                 { parse_mode: 'Markdown' }
             );
         } else {
             console.error('Payment initialization failed:', paymentResult.message);
-            await ctx.reply(`Payment initialization failed: ${paymentResult.message}`);
+            await ctx.reply('Sorry, we couldn\'t start your payment. Please try again later.');
         }
     } catch (error) {
         console.error('Error processing card payment:', error);

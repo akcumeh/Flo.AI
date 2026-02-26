@@ -47,7 +47,7 @@ export async function askClaude(user, prompt) {
     const response = await sendTextMessage(formattedMessages);
 
     console.log('Claude response received');
-    return response.replace(/^\[Florence\*\]\s*/, '');
+    return response;
 }
 
 export async function askClaudeWithAtt(user, b64, fileType, prompt) {
@@ -60,7 +60,7 @@ export async function askClaudeWithAtt(user, b64, fileType, prompt) {
     const response = await sendMessageWithAttachment(formattedMessages);
 
     console.log('Claude response received');
-    return response.replace(/^\[Florence\*\]\s*/, '');
+    return response;
 }
 
 // Welcome message

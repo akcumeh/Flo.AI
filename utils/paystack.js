@@ -52,6 +52,7 @@ export async function initializeCardPayment(user, amount, callbackUrl) {
 
         const payload = {
             email: user.email || `${numericUserId}@placeholder.com`,
+            amount: amount * 100,
             reference,
             callback_url: callbackUrl,
             metadata: {
