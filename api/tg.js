@@ -8,7 +8,7 @@ import crypto from 'crypto';
 
 const router = express.Router();
 import {
-    addUser, getUser, updateUser, askClaude, askClaudeWithAtt, walkThru
+    addUser, getUser, updateUser, askClaude, askClaudeWithAtt, askClaudeForDocument, needsDocumentSkill, walkThru
 } from '../utils/utils.js';
 import { downloadTelegramFile } from '../utils/getMsgContent.js';
 import { Transaction } from '../models/transactions.js';
@@ -1087,8 +1087,11 @@ async function handleRegularMessage(ctx, userId) {
         createdAt: new Date()
     });
 
-    // CHANGE: Add cancel button to thinking message
-    const thinkingMsg = await ctx.reply('Thinking...', {
+    const thinkingText = needsDocumentSkill(ctx.message.text)
+        ? 'Creating your document, this may take up to 2 minutes...'
+        : 'Thinking...';
+
+    const thinkingMsg = await ctx.reply(thinkingText, {
         reply_markup: {
             inline_keyboard: [
                 [{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]
@@ -1118,7 +1121,17 @@ async function handleRegularMessage(ctx, userId) {
 
         // Get Claude response with current conversation history
         console.log('🤖 Calling Claude API with message:', ctx.message.text?.substring(0, 50) + '...');
-        const claudeAnswer = await askClaude(freshUser, ctx.message.text);
+
+        let claudeAnswer;
+        let docResult = null;
+
+        if (needsDocumentSkill(ctx.message.text)) {
+            docResult = await askClaudeForDocument(freshUser, ctx.message.text);
+            claudeAnswer = docResult?.text || 'Your document is ready.';
+        } else {
+            claudeAnswer = await askClaude(freshUser, ctx.message.text);
+        }
+
         console.log('✅ Claude response received, length:', claudeAnswer?.length || 0);
 
         // Final cancellation check
@@ -1132,11 +1145,19 @@ async function handleRegularMessage(ctx, userId) {
             { role: "assistant", content: claudeAnswer }
         ];
 
+        const sendAction = docResult?.fileBuffer
+            ? bot.telegram.sendDocument(
+                ctx.chat.id,
+                { source: docResult.fileBuffer, filename: `florence-document.${docResult.ext}` },
+                { caption: claudeAnswer }
+              )
+            : sendLongMessage(ctx, claudeAnswer);
+
         await Promise.all([
             updateUser(userId, { convoHistory: newConvoHistory }),
             requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => { }),
-            sendLongMessage(ctx, claudeAnswer).then(() => console.log('Message sent to user'))
+            sendAction.then(() => console.log('Response sent to user'))
         ]);
 
         // Check streak reward

@@ -10,10 +10,11 @@ import {
     getUser,
     updateUser,
     askClaude,
-    askClaudeWithAtt
+    askClaudeWithAtt,
+    askClaudeForDocument,
+    needsDocumentSkill
 } from '../utils/utils.js';
 import { initializeCardPayment, verifyTransaction } from '../utils/paystack.js';
-import { initFw, verifyFw } from '../utils/flutterwave.js';
 import VerificationState from '../models/verificationState.js';
 import { Transaction } from '../models/transactions.js';
 import { RequestState, PaymentState } from '../models/serverless.js';
@@ -169,6 +170,28 @@ async function sendMsg(content, id) {
         console.error('Error sending WA message', error);
         throw error;
     }
+}
+
+async function sendDocumentToUser(waId, fileBuffer, filename, mimeType) {
+    const phone = waId.replace('wa:', '');
+    const formData = new FormData();
+    formData.append('file', new Blob([fileBuffer], { type: mimeType }), filename);
+    formData.append('messaging_product', 'whatsapp');
+
+    const uploadRes = await axios.post(
+        `${META_API_BASE}/${PHONE_NUMBER_ID}/media`,
+        formData,
+        { headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` } }
+    );
+
+    const mediaId = uploadRes.data.id;
+
+    await sendMetaRequest(`${PHONE_NUMBER_ID}/messages`, {
+        messaging_product: 'whatsapp',
+        to: phone,
+        type: 'document',
+        document: { id: mediaId, filename }
+    });
 }
 
 async function sendTemplate(templateName, languageCode, phoneNumber, variables) {
@@ -347,26 +370,15 @@ router.post('/', async (req, res) => {
 
                 const callbackUrl = `${process.env.WEBHOOK_URL}/api/wa/payment/callback`;
 
-                const [paystackResult, fwResult] = await Promise.all([
-                    initializeCardPayment({ userId, email }, 1000, callbackUrl),
-                    initFw({ userId, email, name: ProfileName }, 1000, callbackUrl)
-                ]);
+                const paystackResult = await initializeCardPayment({ userId, email: user.email }, 1000, callbackUrl);
 
-                if (paystackResult.success && fwResult.success) {
+                if (paystackResult.success) {
                     paymentState.paystackReference = paystackResult.reference;
-                    paymentState.flutterwaveReference = fwResult.reference;
                     await paymentState.save();
 
-                    console.log('Paystack URL:', paystackResult.authorizationUrl);
-                    console.log('Flutterwave URL:', fwResult.paymentLink);
-
                     const psCode = paystackRef(paystackResult.authorizationUrl);
-                    const fwCode = fwRef(fwResult.paymentLink);
 
-                    console.log('Extracted Paystack code:', psCode);
-                    console.log('Extracted Flutterwave code:', fwCode);
-
-                    await sendTemplate('c_payments_hx8b29fa9d0918c026a673c436f18eea29', 'en', WaId, [psCode, fwCode]);
+                    await sendTemplate('c_payments_hx8b29fa9d0918c026a673c436f18eea29', 'en', WaId, [psCode]);
 
                     await new Promise(resolve => setTimeout(resolve, 1000));
 
@@ -746,7 +758,16 @@ router.post('/', async (req, res) => {
                 await updateUser(userId, { tokens: user.tokens - 1 });
 
                 const freshUser = await getUser(userId);
-                const response = await askClaude(freshUser, Body);
+                let response;
+                let docResult = null;
+
+                if (needsDocumentSkill(Body)) {
+                    await sendMsg('Creating your document, this may take up to 2 minutes...', WaId);
+                    docResult = await askClaudeForDocument(freshUser, Body);
+                    response = docResult?.text || 'Your document is ready.';
+                } else {
+                    response = await askClaude(freshUser, Body);
+                }
 
                 const newConvoHistory = [
                     ...(freshUser.convoHistory || []),
@@ -755,7 +776,13 @@ router.post('/', async (req, res) => {
                 ];
 
                 await updateUser(userId, { convoHistory: newConvoHistory });
-                await sendMsg(response, WaId);
+
+                if (docResult?.fileBuffer) {
+                    await sendMsg(response, WaId);
+                    await sendDocumentToUser(WaId, docResult.fileBuffer, `florence-document.${docResult.ext}`, docResult.mime);
+                } else {
+                    await sendMsg(response, WaId);
+                }
                 return res.status(200).send('OK');
         }
     } catch (error) {

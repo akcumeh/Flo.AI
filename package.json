@@ -4,9 +4,6 @@
     "description": "The educational assistant.",
     "main": "main.js",
     "scripts": {
-        "test": "node test_suite/runTests.js",
-        "test:setup": "TEST_MODE=true node test_suite/setupTest.js",
-        "test:cleanup": "TEST_MODE=true node test_suite/cleanupTest.js",
         "start": "nodemon main.js"
     },
     "type": "module",
@@ -14,12 +11,11 @@
     "author": "",
     "license": "ISC",
     "dependencies": {
-        "@anthropic-ai/sdk": "^0.32.1",
+        "@anthropic-ai/sdk": "^0.71.0",
         "axios": "^1.13.2",
         "body-parser": "^1.20.3",
         "dotenv": "^16.4.7",
         "express": "^4.21.2",
-        "flutterwave-node-v3": "^1.1.14",
         "mongodb": "^6.20.0",
         "mongoose": "^8.8.4",
         "ngrok": "^5.0.0-beta.2",

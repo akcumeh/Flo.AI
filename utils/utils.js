@@ -3,9 +3,24 @@ import { ensureConnection } from '../db/connection.js';
 import {
     sendTextMessage,
     sendMessageWithAttachment,
+    sendSkillsMessage,
     createAttachmentMsg,
     formatMessagesForClaude
 } from './claudeAPI.js';
+
+// Document skill detection helpers
+function needsDocumentSkill(message) {
+    const docKeywords = /(create|make|generate|write|build|export).*(pdf|excel|spreadsheet|word|doc|docx|powerpoint|presentation|report|invoice|receipt)/i;
+    const fileKeywords = /(send|give|attach).*(file|document|spreadsheet|report)/i;
+    return docKeywords.test(message) || fileKeywords.test(message);
+}
+
+function getSkillForRequest(message) {
+    if (/excel|xlsx|spreadsheet/i.test(message)) return 'xlsx';
+    if (/powerpoint|pptx|presentation|slides/i.test(message)) return 'pptx';
+    if (/word|docx/i.test(message)) return 'docx';
+    return 'pdf';
+}
 
 // User Management
 export async function addUser({ id, name, tokens = 10 }) {
@@ -63,6 +78,19 @@ export async function askClaudeWithAtt(user, b64, fileType, prompt) {
     return response;
 }
 
+export async function askClaudeForDocument(user, prompt) {
+    if (!needsDocumentSkill(prompt)) return null;
+
+    console.log('Document skill triggered for prompt:', prompt);
+    const skillId = getSkillForRequest(prompt);
+    const convo = user.convoHistory || [];
+    const formattedMessages = formatMessagesForClaude(convo, prompt);
+
+    const result = await sendSkillsMessage(formattedMessages, skillId);
+    console.log('Skills response received, file generated:', !!result.fileBuffer);
+    return result;
+}
+
 // Welcome message
 export function walkThru(tokens) {
     return `Hello there! Welcome to Florence*, the educational assistant at your fingertips.
@@ -95,3 +123,6 @@ Here are a few helpful commands for a smooth experience:
 
 Please note: Every message except commands will be considered a prompt.`;
 }
+
+// Export the helpers for use in handlers
+export { needsDocumentSkill };

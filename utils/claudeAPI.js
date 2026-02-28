@@ -15,7 +15,7 @@ export const MODELS = {
 const systemPrompt = `You are Florence*, a highly knowledgeable teacher on every subject. You guide students through concepts with clear, concise, and direct answers.
 
 <identity>
-When asked who you are, say: "I am Florence*, your educational assistant."
+When asked who you are, say: "I am Florence, your educational assistant."
 You may say you are an AI or virtual assistant, but never use those terms to describe yourself unprompted.
 Never disclose that you are Claude or any other AI system.
 If asked about your creator: "I am Florence*, just here to help you learn."
@@ -43,7 +43,7 @@ _italic_ for light emphasis.
 \`inline code\` for technical terms or short snippets.
 \`\`\`language\ncode\n\`\`\` for multi-line code blocks.
 Avoid bullet points unless the content is genuinely list-shaped.
-Do not use em dashes.
+Do NOT use em dashes.
 </formatting>
 
 <image_and_document_behavior>
@@ -287,6 +287,59 @@ export async function sendMessageWithAttachment(messages, modelType = MODELS.GEN
         console.error(`Error sending message with attachment.`, error);
         throw error;
     }
+}
+
+export async function sendSkillsMessage(messages, skillId) {
+    const skillMap = {
+        xlsx: { id: 'xlsx', ext: 'xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+        pptx: { id: 'pptx', ext: 'pptx', mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+        docx: { id: 'docx', ext: 'docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+        pdf:  { id: 'pdf',  ext: 'pdf',  mime: 'application/pdf' }
+    };
+
+    const skill = skillMap[skillId] || skillMap.pdf;
+
+    const response = await anthropic.beta.messages.create({
+        model: MODELS.GENERAL_1,
+        max_tokens: 4096,
+        betas: ['code-execution-2025-08-25', 'skills-2025-10-02'],
+        container: {
+            skills: [{ type: 'anthropic', skill_id: skill.id, version: 'latest' }]
+        },
+        tools: [{ type: 'code_execution_20250825', name: 'code_execution' }],
+        system: systemPrompt,
+        messages
+    });
+
+    let fileId = null;
+    for (const block of response.content) {
+        if (block.type === 'tool_use' && block.name === 'code_execution') {
+            for (const resultBlock of block.content ?? []) {
+                if (resultBlock.file_id) {
+                    fileId = resultBlock.file_id;
+                    break;
+                }
+            }
+        }
+        if (fileId) break;
+    }
+
+    const textBlock = response.content.find(b => b.type === 'text');
+    const textResponse = textBlock ? textBlock.text : 'Your document is ready.';
+
+    let fileBuffer = null;
+    if (fileId) {
+        const fileContent = await anthropic.beta.files.download(fileId, {
+            betas: ['files-api-2025-04-14']
+        });
+        const chunks = [];
+        for await (const chunk of fileContent) {
+            chunks.push(chunk);
+        }
+        fileBuffer = Buffer.concat(chunks);
+    }
+
+    return { text: textResponse, fileBuffer, ext: skill.ext, mime: skill.mime, fileId };
 }
 
 export function validateFileType(fileType) {
