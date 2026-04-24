@@ -7,7 +7,7 @@
         "test": "node test_suite/runTests.js",
         "test:setup": "TEST_MODE=true node test_suite/setupTest.js",
         "test:cleanup": "TEST_MODE=true node test_suite/cleanupTest.js",
-        "start": "nodemon main.js"
+        "start": "node --watch main.js"
     },
     "type": "module",
     "keywords": [],
@@ -24,7 +24,6 @@
         "mongoose": "^8.8.4",
         "ngrok": "^5.0.0-beta.2",
         "node-fetch": "^3.3.2",
-        "nodemon": "^3.1.14",
         "open": "^10.1.0",
         "telegraf": "^4.16.3",
         "twilio": "^5.3.7",
