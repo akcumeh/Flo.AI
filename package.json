@@ -7,7 +7,8 @@
         "test": "node test_suite/runTests.js",
         "test:setup": "TEST_MODE=true node test_suite/setupTest.js",
         "test:cleanup": "TEST_MODE=true node test_suite/cleanupTest.js",
-        "start": "node --watch main.js"
+        "dev": "node --watch main.js",
+        "start": "node main.js"
     },
     "type": "module",
     "keywords": [],
