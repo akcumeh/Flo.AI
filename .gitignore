@@ -3,3 +3,4 @@ node_modules
 .vercel
 .claude
 flutterwave-keys.txt
+assets/broadcast-failed.txt

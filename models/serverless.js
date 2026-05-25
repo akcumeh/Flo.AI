@@ -59,7 +59,7 @@ const paymentStateSchema = new mongoose.Schema({
     },
     step: {
         type: String,
-        enum: ['init', 'email', 'save_card', 'processing', 'completed', 'cancelled'],
+        enum: ['init', 'bundle_select', 'email', 'save_card', 'processing', 'completed', 'cancelled'],
         default: 'init'
     },
     method: {

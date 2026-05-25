@@ -12,7 +12,7 @@ import {
     askClaude,
     askClaudeWithAtt
 } from '../utils/utils.js';
-import { initializeCardPayment, verifyTransaction } from '../utils/paystack.js';
+import { initializeCardPayment, verifyTransaction, BUNDLES } from '../utils/paystack.js';
 import { initFw, verifyFw } from '../utils/flutterwave.js';
 import VerificationState from '../models/verificationState.js';
 import { Transaction } from '../models/transactions.js';
@@ -336,6 +336,69 @@ router.post('/', async (req, res) => {
 
         const paymentState = await PaymentState.findOne({ userId });
 
+        if (paymentState && paymentState.step === 'bundle_select' && !Body.startsWith('/')) {
+            const choice = parseInt(Body.trim());
+            const bundle = BUNDLES[choice - 1];
+
+            if (!bundle) {
+                await sendMsg(
+                    `Please reply with a number between 1 and ${BUNDLES.length} to choose your bundle.`,
+                    WaId
+                );
+                return res.status(200).send('OK');
+            }
+
+            paymentState.amount = bundle.amount;
+            paymentState.tokens = bundle.tokens;
+
+            if (user.email) {
+                paymentState.step = 'processing';
+                await paymentState.save();
+
+                const callbackUrl = `${process.env.WEBHOOK_URL}/api/wa/payment/callback`;
+                const [paystackResult, fwResult] = await Promise.all([
+                    initializeCardPayment({ userId, email: user.email }, bundle.amount, callbackUrl, bundle.tokens),
+                    initFw({ userId, email: user.email, name: ProfileName }, bundle.amount, callbackUrl)
+                ]);
+
+                if (paystackResult.success && fwResult.success) {
+                    paymentState.paystackReference = paystackResult.reference;
+                    paymentState.flutterwaveReference = fwResult.reference;
+                    await paymentState.save();
+
+                    const psCode = paystackRef(paystackResult.authorizationUrl);
+                    const fwCode = fwRef(fwResult.paymentLink);
+
+                    try {
+                        await sendTemplate('c_payments_hx8b29fa9d0918c026a673c436f18eea29', 'en', WaId, [psCode, fwCode]);
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        await sendTemplate('ccc_verify_hx53cdb954c4d2b7cfe550c771939b4ee8', 'en', WaId, [paystackResult.reference]);
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        await sendMsg(
+                            `... or tap to copy your reference number:\n/verify ${paystackResult.reference}\n\nPaste the command you just copied into the text box to get your payment confirmed.`,
+                            WaId
+                        );
+                    } catch (templateError) {
+                        console.error('Template error:', templateError);
+                        await sendMsg(
+                            `Complete your payment of ₦${bundle.amount.toLocaleString()} for ${bundle.tokens} tokens:\n\nPaystack: ${paystackResult.authorizationUrl}\n\nFlutterwave: ${fwResult.paymentLink}\n\nOr tap to copy:\n/verify ${paystackResult.reference}\n\nPaste the command you just copied into the text box to get your payment confirmed.`,
+                            WaId
+                        );
+                    }
+                } else {
+                    await sendMsg('Payment initialization failed. Please try again.', WaId);
+                }
+            } else {
+                paymentState.step = 'email';
+                await paymentState.save();
+                await sendMsg(
+                    `Please reply with your email address for payment receipt (we only need this once):`,
+                    WaId
+                );
+            }
+            return res.status(200).send('OK');
+        }
+
         if (paymentState && paymentState.step === 'email' && !Body.startsWith('/')) {
             const email = Body.trim();
 
@@ -347,9 +410,12 @@ router.post('/', async (req, res) => {
 
                 const callbackUrl = `${process.env.WEBHOOK_URL}/api/wa/payment/callback`;
 
+                const selectedAmount = paymentState.amount || 1000;
+                const selectedTokens = paymentState.tokens || 10;
+
                 const [paystackResult, fwResult] = await Promise.all([
-                    initializeCardPayment({ userId, email }, 1000, callbackUrl),
-                    initFw({ userId, email, name: ProfileName }, 1000, callbackUrl)
+                    initializeCardPayment({ userId, email }, selectedAmount, callbackUrl, selectedTokens),
+                    initFw({ userId, email, name: ProfileName }, selectedAmount, callbackUrl)
                 ]);
 
                 if (paystackResult.success && fwResult.success) {
@@ -357,20 +423,25 @@ router.post('/', async (req, res) => {
                     paymentState.flutterwaveReference = fwResult.reference;
                     await paymentState.save();
 
-                    console.log('Paystack URL:', paystackResult.authorizationUrl);
-                    console.log('Flutterwave URL:', fwResult.paymentLink);
-
                     const psCode = paystackRef(paystackResult.authorizationUrl);
                     const fwCode = fwRef(fwResult.paymentLink);
 
-                    console.log('Extracted Paystack code:', psCode);
-                    console.log('Extracted Flutterwave code:', fwCode);
-
-                    await sendTemplate('c_payments_hx8b29fa9d0918c026a673c436f18eea29', 'en', WaId, [psCode, fwCode]);
-
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-
-                    await sendTemplate('ccc_verify_hx53cdb954c4d2b7cfe550c771939b4ee8', 'en', WaId, [paystackResult.reference]);
+                    try {
+                        await sendTemplate('c_payments_hx8b29fa9d0918c026a673c436f18eea29', 'en', WaId, [psCode, fwCode]);
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        await sendTemplate('ccc_verify_hx53cdb954c4d2b7cfe550c771939b4ee8', 'en', WaId, [paystackResult.reference]);
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        await sendMsg(
+                            `... or tap to copy your reference number:\n/verify ${paystackResult.reference}\n\nPaste the command you just copied into the text box to get your payment confirmed.`,
+                            WaId
+                        );
+                    } catch (templateError) {
+                        console.error('Template error:', templateError);
+                        await sendMsg(
+                            `Complete your payment of ₦${selectedAmount.toLocaleString()} for ${selectedTokens} tokens:\n\nPaystack: ${paystackResult.authorizationUrl}\n\nFlutterwave: ${fwResult.paymentLink}\n\nOr tap to copy:\n/verify ${paystackResult.reference}\n\nPaste the command you just copied into the text box to get your payment confirmed.`,
+                            WaId
+                        );
+                    }
                 } else {
                     await sendMsg('Payment initialization failed. Please try again.', WaId);
                 }
@@ -505,69 +576,20 @@ router.post('/', async (req, res) => {
                 return res.status(200).send('OK');
 
             case '/payments':
-                const existingPaymentState = await PaymentState.findOneAndUpdate(
+                await PaymentState.findOneAndUpdate(
                     { userId },
-                    {
-                        step: user.email ? 'processing' : 'email',
-                        amount: 1000,
-                        tokens: 10,
-                        email: user.email,
-                        createdAt: new Date()
-                    },
+                    { step: 'bundle_select', email: user.email || null, createdAt: new Date() },
                     { upsert: true, new: true }
                 );
 
-                if (user.email) {
-                    const callbackUrl = `${process.env.WEBHOOK_URL}/api/wa/payment/callback`;
-                    console.log('Initializing payments for user:', userId, 'email:', user.email);
-                    console.log('Callback URL:', callbackUrl);
+                const bundleList = BUNDLES.map((b, i) =>
+                    `${i + 1}. ₦${b.amount.toLocaleString()} – ${b.tokens} tokens`
+                ).join('\n');
 
-                    const [paystackResult, fwResult] = await Promise.all([
-                        initializeCardPayment({ userId, email: user.email }, 1000, callbackUrl),
-                        initFw({ userId, email: user.email, name: ProfileName }, 1000, callbackUrl)
-                    ]);
-
-                    console.log('Paystack result:', JSON.stringify(paystackResult));
-                    console.log('Flutterwave result:', JSON.stringify(fwResult));
-
-                    if (paystackResult.success && fwResult.success) {
-                        existingPaymentState.paystackReference = paystackResult.reference;
-                        existingPaymentState.flutterwaveReference = fwResult.reference;
-                        await existingPaymentState.save();
-
-                        console.log('Paystack URL:', paystackResult.authorizationUrl);
-                        console.log('Flutterwave URL:', fwResult.paymentLink);
-
-                        const psCode = paystackRef(paystackResult.authorizationUrl);
-                        const fwCode = fwRef(fwResult.paymentLink);
-
-                        console.log('Extracted Paystack code:', psCode);
-                        console.log('Extracted Flutterwave code:', fwCode);
-
-                        try {
-                            await sendTemplate('c_payments_hx8b29fa9d0918c026a673c436f18eea29', 'en', WaId, [psCode, fwCode]);
-                            console.log('Payment template sent');
-
-                            await new Promise(resolve => setTimeout(resolve, 1000));
-
-                            await sendTemplate('ccc_verify_hx53cdb954c4d2b7cfe550c771939b4ee8', 'en', WaId, [paystackResult.reference]);
-                            console.log('Verify template sent');
-                        } catch (templateError) {
-                            console.error('Template error:', templateError);
-                            await sendMsg(
-                                `Payment Links:\n\nPaystack: ${paystackResult.authorizationUrl}\n\nFlutterwave: ${fwResult.paymentLink}\n\nReference: ${paystackResult.reference}\n\nVerify with: /verify ${paystackResult.reference}`,
-                                WaId
-                            );
-                        }
-                    } else {
-                        await sendMsg('Payment initialization failed. Please try again.', WaId);
-                    }
-                } else {
-                    await sendMsg(
-                        `Please reply with your email address for payment receipt (we only need this once):`,
-                        WaId
-                    );
-                }
+                await sendMsg(
+                    `Please choose your bundle:\n\n${bundleList}\n\nReply with the number of your choice.`,
+                    WaId
+                );
                 return res.status(200).send('OK');
 
             case '/tokens':

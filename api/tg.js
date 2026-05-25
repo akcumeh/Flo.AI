@@ -13,7 +13,7 @@ import {
 import { downloadTelegramFile } from '../utils/getMsgContent.js';
 import { Transaction } from '../models/transactions.js';
 import VerificationState from '../models/verificationState.js';
-import { initializeCardPayment, initializeBankTransfer, verifyTransaction } from '../utils/paystack.js';
+import { initializeCardPayment, initializeBankTransfer, verifyTransaction, BUNDLES } from '../utils/paystack.js';
 import { updateUserStreak, checkStreakReward, getUserStreakInfo } from '../utils/streakManager.js';
 import { RequestState } from '../models/serverless.js';
 
@@ -149,37 +149,26 @@ bot.command('payments', async (ctx) => {
             return ctx.reply('You need to start the bot first. Please send /start.');
         }
 
-        // Create/update payment state in database
-        const paymentState = await PaymentState.findOneAndUpdate(
+        // Create/update payment state — wait for bundle selection
+        await PaymentState.findOneAndUpdate(
             { userId },
-            {
-                step: 'init',
-                amount: 1000,
-                tokens: 10,
-                createdAt: new Date()
-            },
+            { step: 'bundle_select', createdAt: new Date() },
             { upsert: true, new: true }
         );
 
-        // Check if user already has an email saved
-        if (user.email) {
-            // Skip email collection step and move directly to payment
-            return processPayment(ctx, user, paymentState);
-        } else {
-            // Request email from user
-            paymentState.step = 'email';
-            await paymentState.save();
-
-            return ctx.reply(
-                'Please enter your email address for payment receipt (we only need this once):',
-                {
-                    reply_markup: {
-                        force_reply: true,
-                        selective: true
-                    }
-                }
-            );
+        const bundleRows = [];
+        for (let i = 0; i < BUNDLES.length; i += 2) {
+            const row = BUNDLES.slice(i, i + 2).map(b => ({
+                text: `₦${b.amount.toLocaleString()} – ${b.tokens} tokens`,
+                callback_data: `bundle_${b.amount}`
+            }));
+            bundleRows.push(row);
         }
+
+        return ctx.reply(
+            'Please choose your bundle:',
+            { reply_markup: { inline_keyboard: bundleRows } }
+        );
     } catch (error) {
         console.error('Error in /payments command:', error);
         await ctx.reply('Sorry, something went wrong. Please try again.');
@@ -349,6 +338,42 @@ bot.command('help', async (ctx) => {
 });
 
 /* === Callback Handlers === */
+
+bot.action(/^bundle_(\d+)$/, async (ctx) => {
+    try {
+        const userId = prefix + ctx.from.id;
+        await ensureConnection();
+        const user = await getUser(userId);
+        if (!user) return ctx.reply('You need to start the bot first. Please send /start.');
+
+        const amount = parseInt(ctx.match[1]);
+        const bundle = BUNDLES.find(b => b.amount === amount);
+        if (!bundle) return ctx.answerCbQuery('Invalid bundle. Please try /payments again.');
+
+        await ctx.answerCbQuery();
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+
+        const state = await PaymentState.findOneAndUpdate(
+            { userId },
+            { step: user.email ? 'processing' : 'email', amount: bundle.amount, tokens: bundle.tokens },
+            { upsert: true, new: true }
+        );
+
+        if (user.email) {
+            state.email = user.email;
+            await state.save();
+            return processPayment(ctx, user, state);
+        } else {
+            return ctx.reply(
+                'Please enter your email address for payment receipt (we only need this once):',
+                { reply_markup: { force_reply: true, selective: true } }
+            );
+        }
+    } catch (error) {
+        console.error('Error in bundle selection:', error);
+        await ctx.reply('Sorry, something went wrong. Please try again.');
+    }
+});
 
 bot.action('payment_card', async (ctx) => {
     try {
@@ -936,9 +961,9 @@ async function processPayment(ctx, user, state) {
                 }
             );
 
-            // Second message with just the reference for easy copying
+            // Second message: tap to copy the verify command
             await ctx.reply(
-                `... or copy and paste it yourself:\n\`/verify ${paymentResult.reference}\``,
+                `... or tap to copy your reference number:\n\`/verify ${paymentResult.reference}\`\n\nPaste the command you just copied into the text box below to get your payment confirmed.`,
                 { parse_mode: 'Markdown' }
             );
         } else {
@@ -1198,9 +1223,9 @@ async function processCardPayment(ctx, user, state) {
                 }
             );
 
-            // Second message with just the reference for easy copying
+            // Second message: tap to copy the verify command
             await ctx.reply(
-                `... or copy and paste it yourself:\n\`/verify ${paymentResult.reference}\``,
+                `... or tap to copy your reference number:\n\`/verify ${paymentResult.reference}\`\n\nPaste the command you just copied into the text box below to get your payment confirmed.`,
                 { parse_mode: 'Markdown' }
             );
         } else {

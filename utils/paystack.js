@@ -8,6 +8,15 @@ dotenv.config();
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SK_LIVE;
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 
+export const BUNDLES = [
+    { amount: 500,   tokens: 4   },
+    { amount: 1000,  tokens: 10  },
+    { amount: 2500,  tokens: 28  },
+    { amount: 5000,  tokens: 60  },
+    { amount: 10000, tokens: 130 },
+    { amount: 25000, tokens: 350 },
+];
+
 /**
  * Makes authenticated requests to Paystack API
  */
@@ -45,10 +54,12 @@ function getNumericUserId(userId) {
 /**
  * Initializes a card payment transaction with Paystack
  */
-export async function initializeCardPayment(user, amount, callbackUrl) {
+export async function initializeCardPayment(user, amount, callbackUrl, tokens = null) {
     try {
         const numericUserId = getNumericUserId(user.userId);
         const reference = `FLO-PAY-${Date.now()}-${numericUserId}`;
+
+        const resolvedTokens = tokens ?? BUNDLES.find(b => b.amount === amount)?.tokens ?? Math.floor(amount / 100);
 
         const payload = {
             email: user.email || `${numericUserId}@placeholder.com`,
@@ -58,7 +69,7 @@ export async function initializeCardPayment(user, amount, callbackUrl) {
             metadata: {
                 user_id: user.userId,
                 payment_type: 'token_purchase',
-                tokens: Math.floor(amount / 1000) * 10
+                tokens: resolvedTokens
             }
         };
 
@@ -69,7 +80,7 @@ export async function initializeCardPayment(user, amount, callbackUrl) {
                 userId: user.userId,
                 reference,
                 amount,
-                tokens: Math.floor(amount / 100),
+                tokens: resolvedTokens,
                 email: user.email,
                 status: 'pending',
                 metadata: {
