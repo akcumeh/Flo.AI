@@ -17,7 +17,7 @@ async function sendMonthlyAnalytics() {
 
         const totalUsers = await User.countDocuments({});
         const newUsers = await User.countDocuments({
-            lastTokenReward: { $gte: startDate }
+            createdAt: { $gte: startDate }
         });
 
         const transactions = await Transaction.find({
