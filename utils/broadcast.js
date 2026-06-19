@@ -11,12 +11,19 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+const MEDIA_FILE = path.resolve(__dirname, '../assets/flo-reviews-ad.jpg');
 
-const ANIMATION_FILE = path.resolve(__dirname, '../assets/bundles-launch.mp4');
+const CAPTION = `Our students have been using Florence for a while now, and honestly, they love it.
 
-const CAPTION = `Late-night STEM grinds shouldn't be interrupted by constant token top-ups. We noticed our power users hitting a wall right when they needed to focus the most.
+Engineering students, law students, pharmacy, biochemistry, even mass comm and psychology. Different course loads, same result.
 
-Today, we are rolling out Florence Bundles*. Instead of topping up multiple times a week, you can now secure your token balance upfront, save money, and maintain your momentum without breaking your study flow.`;
+We are sharing this because we genuinely think it will help.
+
+Give it a try when you get a chance, and let us know what you think.
+
+You can learn more about us on <a href="https://www.linkedin.com/posts/myflorenceai_we-put-this-out-because-university-of-lagos-activity-7470387227227947008-FW-B?utm_source=share&utm_medium=member_desktop&rcm=ACoAADJvBLkBgrsD5Gg252PCsVMHMrLx6i7ClJU">LinkedIn</a> and follow us on X: https://x.com/useflorenceai/status/2064621796620395009`;
+
+const TEST_TELEGRAM_ID = process.env.MY_TELEGRAM_ID || '';
 
 // ---------------------------------------------------------------------------
 // Tuning knobs
@@ -33,24 +40,38 @@ function isTransient(error) {
     return TRANSIENT_ERRORS.some(code => error.message?.includes(code) || error.code === code);
 }
 
-async function sendToUser(telegramId, useAnimation, message) {
-    if (useAnimation) {
+function getMediaType() {
+    if (!MEDIA_FILE || !fs.existsSync(MEDIA_FILE)) return null;
+    const ext = path.extname(MEDIA_FILE).toLowerCase();
+    if (ext === '.mp4' || ext === '.gif') return 'animation';
+    if (ext === '.jpg' || ext === '.jpeg' || ext === '.png' || ext === '.webp') return 'photo';
+    return null;
+}
+
+async function sendToUser(telegramId, mediaType, message) {
+    if (mediaType === 'animation') {
         await bot.telegram.sendAnimation(
             telegramId,
-            { source: fs.createReadStream(ANIMATION_FILE) },
-            { caption: CAPTION }
+            { source: fs.createReadStream(MEDIA_FILE) },
+            { caption: CAPTION, parse_mode: 'HTML' }
+        );
+    } else if (mediaType === 'photo') {
+        await bot.telegram.sendPhoto(
+            telegramId,
+            { source: fs.createReadStream(MEDIA_FILE) },
+            { caption: CAPTION, parse_mode: 'HTML' }
         );
     } else {
         await bot.telegram.sendMessage(telegramId, message, { parse_mode: 'MarkdownV2' });
     }
 }
 
-async function sendWithRetry(user, useAnimation, message) {
+async function sendWithRetry(user, mediaType, message) {
     const telegramId = user.userId.replace('tg-', '');
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            await sendToUser(telegramId, useAnimation, message);
+            await sendToUser(telegramId, mediaType, message);
             return { success: true, user, telegramId };
         } catch (error) {
             const transient = isTransient(error);
@@ -68,17 +89,20 @@ async function sendWithRetry(user, useAnimation, message) {
 }
 
 async function broadCast() {
-    const message = process.argv[2];
-    const targetUserIds = process.argv[3];
+    const args = process.argv.slice(2);
+    const testMode = args.includes('--test');
+    const message = args.find(a => !a.startsWith('--') && a !== '') || null;
+    const targetArg = args.find((a, i) => !a.startsWith('--') && i > 0 && args[i - 1] !== '--test') || null;
 
-    const useAnimation = !message && fs.existsSync(ANIMATION_FILE);
+    const mediaType = getMediaType();
+    const hasContent = message || mediaType;
 
-    if (!message && !useAnimation) {
-        console.log('Usage: node utils/broadcast.js "Your message here" [comma-separated telegram IDs]');
-        console.log('Examples:');
-        console.log('  node utils/broadcast.js "Hello everyone"');
-        console.log('  node utils/broadcast.js "Hello specific users" "123456789,987654321"');
-        console.log('  node utils/broadcast.js  (no args — sends ANIMATION_FILE + CAPTION to all users)');
+    if (!hasContent) {
+        console.log('Usage:');
+        console.log('  node utils/broadcast.js                        — send MEDIA_FILE + CAPTION to all users');
+        console.log('  node utils/broadcast.js --test                 — send to TEST_TELEGRAM_ID only');
+        console.log('  node utils/broadcast.js "text message"         — send plain text to all users');
+        console.log('  node utils/broadcast.js "" "123,456"           — send MEDIA_FILE + CAPTION to specific IDs');
         process.exit(1);
     }
 
@@ -87,10 +111,16 @@ async function broadCast() {
 
         let users;
 
-        if (targetUserIds) {
-            const telegramIds = targetUserIds.split(',').map(id => id.trim());
+        if (testMode) {
+            if (!TEST_TELEGRAM_ID) {
+                console.error('Set MY_TELEGRAM_ID in .env or set TEST_TELEGRAM_ID at the top of broadcast.js');
+                process.exit(1);
+            }
+            users = [{ userId: `tg-${TEST_TELEGRAM_ID}`, name: 'You (test)' }];
+            console.log(`TEST MODE — sending only to ${TEST_TELEGRAM_ID}`);
+        } else if (targetArg) {
+            const telegramIds = targetArg.split(',').map(id => id.trim());
             const userIds = telegramIds.map(id => `tg-${id}`);
-
             users = await User.find({ userId: { $in: userIds } }, 'userId name').lean();
             console.log(`Broadcasting to ${users.length} specific users...`);
 
@@ -107,7 +137,6 @@ async function broadCast() {
         let successCount = 0;
         const failed = [];
 
-        // Split into batches and send each batch concurrently
         for (let i = 0; i < users.length; i += BATCH_SIZE) {
             const batch = users.slice(i, i + BATCH_SIZE);
             const batchNum = Math.floor(i / BATCH_SIZE) + 1;
@@ -116,7 +145,7 @@ async function broadCast() {
             console.log(`\nBatch ${batchNum}/${totalBatches} (${batch.length} users)...`);
 
             const results = await Promise.allSettled(
-                batch.map(user => sendWithRetry(user, useAnimation, message))
+                batch.map(user => sendWithRetry(user, mediaType, message))
             );
 
             for (const result of results) {
@@ -131,7 +160,6 @@ async function broadCast() {
                 }
             }
 
-            // Pause between batches (skip pause after the last one)
             if (i + BATCH_SIZE < users.length) {
                 await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
             }
@@ -139,7 +167,6 @@ async function broadCast() {
 
         console.log(`\nResults: ${successCount} sent, ${failed.length} failed`);
 
-        // Write failed users to a file so you can re-run just them
         if (failed.length > 0) {
             const failedIds = failed
                 .filter(f => f?.telegramId)
