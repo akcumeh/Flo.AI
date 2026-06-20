@@ -1,44 +1,44 @@
 {
   "version": 2,
   "functions": {
-    "api/tg.js": {
+    "api/tg.ts": {
       "maxDuration": 30
     },
-    "api/wa.js": {
+    "api/wa.ts": {
       "maxDuration": 30
     },
-    "api/analytics-weekly.js": {
+    "api/analytics-weekly.ts": {
       "maxDuration": 30
     },
-    "api/analytics-monthly.js": {
+    "api/analytics-monthly.ts": {
       "maxDuration": 30
     },
-    "api/daily-reminders.js": {
+    "api/daily-reminders.ts": {
       "maxDuration": 30
     },
-    "api/daily-resets.js": {
+    "api/daily-resets.ts": {
       "maxDuration": 30
     },
-    "api/broadcast.js": {
+    "api/broadcast.ts": {
         "maxDuration": 30
     }
   },
   "routes": [
     {
       "src": "/api/tg",
-      "dest": "/api/tg.js"
+      "dest": "/api/tg.ts"
     },
     {
       "src": "/api/wa(/.*)?",
-      "dest": "/api/wa.js"
+      "dest": "/api/wa.ts"
     },
     {
       "src": "/api/analytics-weekly",
-      "dest": "/api/analytics-weekly.js"
+      "dest": "/api/analytics-weekly.ts"
     },
     {
       "src": "/api/analytics-monthly",
-      "dest": "/api/analytics-monthly.js"
+      "dest": "/api/analytics-monthly.ts"
     },
     {
       "src": "/api/debug",
@@ -54,15 +54,15 @@
     },
     {
       "src": "/api/daily-reminders",
-      "dest": "/api/daily-reminders.js"
+      "dest": "/api/daily-reminders.ts"
     },
     {
       "src": "/api/daily-resets",
-      "dest": "/api/daily-resets.js"
+      "dest": "/api/daily-resets.ts"
     },
     {
       "src": "/api/broadcast",
-      "dest": "/api/broadcast.js"
+      "dest": "/api/broadcast.ts"
     },
     {
       "src": "/(.*)",
