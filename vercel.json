@@ -41,18 +41,6 @@
       "dest": "/api/analytics-monthly.ts"
     },
     {
-      "src": "/api/debug",
-      "dest": "/api/debug.js"
-    },
-    {
-      "src": "/api/setup",
-      "dest": "/api/setup.js"
-    },
-    {
-      "src": "/api/warmup",
-      "dest": "/api/warmup.js"
-    },
-    {
       "src": "/api/daily-reminders",
       "dest": "/api/daily-reminders.ts"
     },
@@ -63,10 +51,6 @@
     {
       "src": "/api/broadcast",
       "dest": "/api/broadcast.ts"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/api/index.js"
     }
   ]
 }
