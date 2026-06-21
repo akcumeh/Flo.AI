@@ -522,10 +522,9 @@ bot.on(message('photo'), async (ctx) => {
     if (existingRequest) return;
 
     let user = await userRepo.findUser(userId);
+    const isNewUser = !user;
     if (!user) {
         user = await userRepo.createUser({ id: userId, name: ctx.from!.first_name, tokens: 10 });
-        await ctx.reply(welcomeMessage(user.tokens));
-        return;
     }
 
     if (user.tokens < 2) {
@@ -601,10 +600,9 @@ bot.on(message('document'), async (ctx) => {
     if (existingRequest) return;
 
     let user = await userRepo.findUser(userId);
+    const isNewUser = !user;
     if (!user) {
         user = await userRepo.createUser({ id: userId, name: ctx.from!.first_name, tokens: 10 });
-        await ctx.reply(welcomeMessage(user.tokens));
-        return;
     }
 
     if (user.tokens < 2) {
@@ -617,9 +615,11 @@ bot.on(message('document'), async (ctx) => {
     const caption = ctx.message.caption || `Analyze this ${fileName} document.`;
 
     if (!['application/pdf'].includes(mimeType) && !fileName.toLowerCase().endsWith('.pdf')) {
-        return ctx.reply(
+        await ctx.reply(
             'Sorry, I can only process PDF documents. Please convert your document to PDF format and try again.'
         );
+        if (isNewUser) await ctx.reply(welcomeMessage(user.tokens));
+        return;
     }
 
     const requestState = new RequestState({
@@ -889,8 +889,11 @@ async function performVerification(ctx: any, user: IUser, reference: string, pro
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
-    const user = await userRepo.findUser(userId);
-    if (!user) return ctx.reply('You need to start the bot first. Please send /start.');
+    let user = await userRepo.findUser(userId);
+    const isNewUser = !user;
+    if (!user) {
+        user = await userRepo.createUser({ id: userId, name: ctx.from?.first_name ?? 'there', tokens: 10 });
+    }
 
     const text = (ctx.message as { text?: string }).text ?? '';
     const messageId = (ctx.message as { message_id: number }).message_id;
@@ -923,6 +926,11 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
             sendLongMessage(ctx, response),
         ]);
+
+        if (isNewUser) {
+            const updated = await userRepo.findUser(userId);
+            await ctx.reply(welcomeMessage(updated?.tokens ?? user.tokens - 1));
+        }
 
         setTimeout(() => streakService.checkStreakReward(userId).catch(console.error), 1000);
     } catch (error) {
