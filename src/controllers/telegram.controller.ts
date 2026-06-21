@@ -573,24 +573,21 @@ bot.on(message('photo'), async (ctx) => {
             sendLongMessage(ctx, response),
         ]);
 
+        if (isNewUser) {
+            const updated = await userRepo.findUser(userId);
+            await ctx.reply(welcomeMessage(updated?.tokens ?? user.tokens - 2));
+        }
+
         setTimeout(() => streakService.checkStreakReward(userId).catch(console.error), 1000);
     } catch (error) {
         console.error('Error processing photo:', error);
-        if (!(error instanceof InsufficientTokensError)) {
-            try {
-                const currentUser = await userRepo.findUser(userId);
-                if (currentUser) await userRepo.updateUser(userId, { tokens: currentUser.tokens + 2 });
-            } catch (refundError) {
-                console.error('Error refunding tokens:', refundError);
-            }
-        }
         await Promise.all([
             requestState.updateOne({ status: 'failed', error: (error as Error).message }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
             ctx.reply(
                 error instanceof InsufficientTokensError
                     ? "You don't have enough tokens for an image upload. Send /payments to top up."
-                    : 'Sorry, there was an error processing your image. Your tokens have been refunded.'
+                    : 'Sorry, there was an error processing your image. You have not been charged.'
             ),
         ]);
     }
@@ -665,17 +662,14 @@ bot.on(message('document'), async (ctx) => {
             sendLongMessage(ctx, response),
         ]);
 
+        if (isNewUser) {
+            const updated = await userRepo.findUser(userId);
+            await ctx.reply(welcomeMessage(updated?.tokens ?? user.tokens - 2));
+        }
+
         setTimeout(() => streakService.checkStreakReward(userId).catch(console.error), 1000);
     } catch (error) {
         console.error('Error processing document:', error);
-        if (!(error instanceof InsufficientTokensError)) {
-            try {
-                const currentUser = await userRepo.findUser(userId);
-                if (currentUser) await userRepo.updateUser(userId, { tokens: currentUser.tokens + 2 });
-            } catch (refundError) {
-                console.error('Error refunding tokens:', refundError);
-            }
-        }
 
         let errorMessage: string;
         if (error instanceof InsufficientTokensError) {
@@ -684,16 +678,16 @@ bot.on(message('document'), async (ctx) => {
             const msg = (error as Error).message.toLowerCase();
             if (msg.includes('timeout') || msg.includes('timed out')) {
                 errorMessage =
-                    'Sorry, the request timed out while processing your document. Please try uploading it again or use a smaller file. Your tokens have been refunded.';
+                    'Sorry, the request timed out while processing your document. Please try uploading it again or use a smaller file. You have not been charged.';
             } else if (msg.includes('fetch failed') || msg.includes('download failed')) {
                 errorMessage =
-                    'Sorry, there was a problem downloading your document. Please try uploading it again. Your tokens have been refunded.';
+                    'Sorry, there was a problem downloading your document. Please try uploading it again. You have not been charged.';
             } else if (msg.includes('econnreset') || msg.includes('connection')) {
                 errorMessage =
-                    'Sorry, there was a connection error. Please try uploading your document again. Your tokens have been refunded.';
+                    'Sorry, there was a connection error. Please try uploading your document again. You have not been charged.';
             } else {
                 errorMessage =
-                    'Sorry, there was an error processing your document. Your tokens have been refunded.';
+                    'Sorry, there was an error processing your document. You have not been charged.';
             }
         }
 
@@ -943,17 +937,10 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
             return;
         }
 
-        try {
-            const currentUser = await userRepo.findUser(userId);
-            if (currentUser) await userRepo.updateUser(userId, { tokens: currentUser.tokens + 1 });
-        } catch (refundError) {
-            console.error('Error refunding tokens:', refundError);
-        }
-
         await Promise.all([
             requestState.updateOne({ status: 'failed', error: (error as Error).message }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
-            ctx.reply('Sorry, something went wrong. Your token has been refunded.'),
+            ctx.reply('Sorry, something went wrong. You have not been charged. Please try again.'),
         ]);
     }
 }

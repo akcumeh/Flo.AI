@@ -155,11 +155,14 @@ export async function processTextMessage(userId: string, text: string): Promise<
 
     if (user.tokens < 1) throw new InsufficientTokensError();
 
-    await userRepo.updateUser(userId, { tokens: user.tokens - 1 });
-
     const history = await convoRepo.getHistory(userId);
     const messages = buildClaudeMessages(history, text);
     const response = await callClaude(messages, false);
+
+    // Charge only after a successful response. If callClaude throws, no token is
+    // spent, so there is no refund path. Re-fetch to respect any streak reward.
+    const charged = await userRepo.findUser(userId);
+    await userRepo.updateUser(userId, { tokens: (charged?.tokens ?? user.tokens) - 1 });
 
     await convoRepo.appendMessages(userId, [
         { role: 'user', content: text },
@@ -182,8 +185,6 @@ export async function processMediaMessage(
 
     if (user.tokens < 2) throw new InsufficientTokensError();
 
-    await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
-
     const mediaType = mimeType.startsWith('image/') ? 'image' : 'document';
     const attachmentContent = [
         {
@@ -196,6 +197,10 @@ export async function processMediaMessage(
     const history = await convoRepo.getHistory(userId);
     const messages = buildClaudeMessages(history, attachmentContent);
     const response = await callClaude(messages, true);
+
+    // Charge only after a successful response (see processTextMessage).
+    const charged = await userRepo.findUser(userId);
+    await userRepo.updateUser(userId, { tokens: (charged?.tokens ?? user.tokens) - 2 });
 
     await convoRepo.appendMessages(userId, [
         {
