@@ -121,8 +121,8 @@ async function callClaude(messages: ClaudeMessage[], withAttachment = false): Pr
         output_config: { effort: withAttachment ? 'medium' : 'low' },
         system: systemPrompt,
         tools: [
-            { type: 'web_search_20260318', name: 'web_search' },
-            { type: 'web_fetch_20260318', name: 'web_fetch' },
+            { type: 'web_search_20260209', name: 'web_search' },
+            { type: 'web_fetch_20260209', name: 'web_fetch' },
         ],
         messages,
     } as unknown as Anthropic.MessageCreateParamsNonStreaming;
