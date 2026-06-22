@@ -122,7 +122,13 @@ async function sendLongMessage(ctx: any, text: string, options: object = {}): Pr
     const chunks = splitMessage(text);
 
     if (chunks.length === 1) {
-        return ctx.reply(chunks[0], { ...options, parse_mode: 'Markdown' });
+        try {
+            return await ctx.reply(chunks[0], { ...options, parse_mode: 'Markdown' });
+        } catch (err) {
+            // Fall back to plain text so the user gets the answer unformatted.
+            console.error('Markdown parse failed, retrying as plain text:', (err as Error).message);
+            return ctx.reply(chunks[0], options);
+        }
     }
 
     const messages = [];
@@ -132,7 +138,13 @@ async function sendLongMessage(ctx: any, text: string, options: object = {}): Pr
         else if (i === chunks.length - 1) messageText = `_(continued from above)_\n\n${messageText}`;
         else messageText = `_(continued from above)_\n\n${messageText}\n\n_(continued...)_`;
 
-        const sent = await ctx.reply(messageText, { ...options, parse_mode: 'Markdown' });
+        let sent;
+        try {
+            sent = await ctx.reply(messageText, { ...options, parse_mode: 'Markdown' });
+        } catch (err) {
+            console.error('Markdown parse failed on chunk, retrying as plain text:', (err as Error).message);
+            sent = await ctx.reply(messageText, options);
+        }
         messages.push(sent);
         if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 100));
     }
@@ -514,6 +526,14 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
 /* === Message Handlers === */
 
 bot.on(message('photo'), async (ctx) => {
+    // Grouped media arrives as one update per file sharing a media_group_id.
+    // Route them to the collector so the whole group is one request charged once,
+    // instead of each file being processed and charged separately.
+    if (ctx.message.media_group_id) {
+        await handleMediaGroupItem(ctx, 'photo');
+        return;
+    }
+
     const userId = PREFIX + ctx.from!.id;
     const messageId = ctx.message.message_id;
 
@@ -602,6 +622,12 @@ bot.on(message('photo'), async (ctx) => {
 });
 
 bot.on(message('document'), async (ctx) => {
+    // See the photo handler: grouped documents are collected, not processed singly.
+    if (ctx.message.media_group_id) {
+        await handleMediaGroupItem(ctx, 'document');
+        return;
+    }
+
     const userId = PREFIX + ctx.from!.id;
     const messageId = ctx.message.message_id;
 
@@ -1052,17 +1078,16 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
                 });
             }
 
-            const firstFile = mediaFiles[0];
             let fileDescription = `I've received ${mediaFiles.length} files from the user.\n`;
             mediaFiles.forEach((file, i) => {
                 fileDescription += `File ${i + 1}: ${file.mimeType}\n`;
             });
             const fullPrompt = `${fileDescription}\n${mg.caption || 'Analyze these images together as a group.'} Please consider all images as part of a single request and provide one comprehensive response.`;
 
-            const claudeAnswer = await assistantService.processMediaMessage(
+            // Send every file in the group to Claude in one turn, not just the first.
+            const claudeAnswer = await assistantService.processMultiMediaMessage(
                 userId,
-                firstFile.b64,
-                firstFile.mimeType,
+                mediaFiles,
                 fullPrompt
             );
 
