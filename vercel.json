@@ -1,56 +1,56 @@
 {
-  "version": 2,
-  "functions": {
-    "api/tg.ts": {
-      "maxDuration": 30
+    "version": 2,
+    "functions": {
+        "api/tg.ts": {
+            "maxDuration": 60
+        },
+        "api/wa.ts": {
+            "maxDuration": 30
+        },
+        "api/analytics-weekly.ts": {
+            "maxDuration": 30
+        },
+        "api/analytics-monthly.ts": {
+            "maxDuration": 30
+        },
+        "api/daily-reminders.ts": {
+            "maxDuration": 30
+        },
+        "api/daily-resets.ts": {
+            "maxDuration": 30
+        },
+        "api/broadcast.ts": {
+            "maxDuration": 30
+        }
     },
-    "api/wa.ts": {
-      "maxDuration": 30
-    },
-    "api/analytics-weekly.ts": {
-      "maxDuration": 30
-    },
-    "api/analytics-monthly.ts": {
-      "maxDuration": 30
-    },
-    "api/daily-reminders.ts": {
-      "maxDuration": 30
-    },
-    "api/daily-resets.ts": {
-      "maxDuration": 30
-    },
-    "api/broadcast.ts": {
-        "maxDuration": 30
-    }
-  },
-  "routes": [
-    {
-      "src": "/api/tg",
-      "dest": "/api/tg.ts"
-    },
-    {
-      "src": "/api/wa(/.*)?",
-      "dest": "/api/wa.ts"
-    },
-    {
-      "src": "/api/analytics-weekly",
-      "dest": "/api/analytics-weekly.ts"
-    },
-    {
-      "src": "/api/analytics-monthly",
-      "dest": "/api/analytics-monthly.ts"
-    },
-    {
-      "src": "/api/daily-reminders",
-      "dest": "/api/daily-reminders.ts"
-    },
-    {
-      "src": "/api/daily-resets",
-      "dest": "/api/daily-resets.ts"
-    },
-    {
-      "src": "/api/broadcast",
-      "dest": "/api/broadcast.ts"
-    }
-  ]
+    "routes": [
+        {
+            "src": "/api/tg",
+            "dest": "/api/tg.ts"
+        },
+        {
+            "src": "/api/wa(/.*)?",
+            "dest": "/api/wa.ts"
+        },
+        {
+            "src": "/api/analytics-weekly",
+            "dest": "/api/analytics-weekly.ts"
+        },
+        {
+            "src": "/api/analytics-monthly",
+            "dest": "/api/analytics-monthly.ts"
+        },
+        {
+            "src": "/api/daily-reminders",
+            "dest": "/api/daily-reminders.ts"
+        },
+        {
+            "src": "/api/daily-resets",
+            "dest": "/api/daily-resets.ts"
+        },
+        {
+            "src": "/api/broadcast",
+            "dest": "/api/broadcast.ts"
+        }
+    ]
 }

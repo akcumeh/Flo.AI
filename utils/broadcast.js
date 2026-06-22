@@ -109,7 +109,6 @@ async function broadCast() {
         let successCount = 0;
         const failed = [];
 
-        // Split into batches and send each batch concurrently
         for (let i = 0; i < users.length; i += BATCH_SIZE) {
             const batch = users.slice(i, i + BATCH_SIZE);
             const batchNum = Math.floor(i / BATCH_SIZE) + 1;
@@ -133,7 +132,6 @@ async function broadCast() {
                 }
             }
 
-            // Pause between batches (skip pause after the last one)
             if (i + BATCH_SIZE < users.length) {
                 await new Promise(r => setTimeout(r, BATCH_PAUSE_MS));
             }
@@ -141,7 +139,6 @@ async function broadCast() {
 
         console.log(`\nResults: ${successCount} sent, ${failed.length} failed`);
 
-        // Write failed users to a file so you can re-run just them
         if (failed.length > 0) {
             const failedIds = failed
                 .filter(f => f?.telegramId)

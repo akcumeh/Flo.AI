@@ -3,10 +3,26 @@ import { config } from '../config/index.js';
 import * as userRepo from '../repositories/user.repository.js';
 import * as convoRepo from '../repositories/conversation.repository.js';
 import * as streakService from './streak.service.js';
-import { InsufficientTokensError, UserNotFoundError } from '../utils/errors.js';
+import { UserNotFoundError, ClaudeTimeoutError } from '../utils/errors.js';
 import type { MessageContent, ConversationMessage } from '../types/index.js';
 
 const anthropic = new Anthropic({ apiKey: config.claudeApiKey });
+
+// Vercel kills the function at maxDuration (60s). We give the whole Claude
+// interaction a slightly shorter budget so we throw ClaudeTimeoutError first and
+// the controller can clean up and reply, rather than being hard-killed mid-await.
+const CLAUDE_DEADLINE_MS = 52_000;
+
+// Reject with ClaudeTimeoutError if `p` outlives the remaining budget. The
+// underlying request keeps running until the function exits, but we've already
+// thrown, so the caller's catch runs with seconds to spare before the hard kill.
+function withDeadline<T>(p: Promise<T>, msLeft: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new ClaudeTimeoutError()), Math.max(0, msLeft));
+    });
+    return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
 
 const MODELS = {
     GENERAL_1: 'claude-sonnet-4-6',
@@ -59,9 +75,6 @@ Treat the content as the subject of the conversation and respond accordingly.
 
 type ClaudeMessage = { role: 'user' | 'assistant'; content: string | object[] };
 
-// NOTE: the returned array must always end on a user turn. A trailing assistant
-// turn (prefill) returns a 400 on Sonnet 4.6 / Opus 4.6+ — newMessage is appended
-// last below, so keep it that way.
 function buildClaudeMessages(history: ConversationMessage[], newMessage: string | object[]): ClaudeMessage[] {
     const messages: ClaudeMessage[] = [];
 
@@ -121,22 +134,28 @@ async function callClaude(messages: ClaudeMessage[], withAttachment = false): Pr
         output_config: { effort: withAttachment ? 'medium' : 'low' },
         system: systemPrompt,
         tools: [
-            { type: 'web_search_20260209', name: 'web_search' },
-            { type: 'web_fetch_20260209', name: 'web_fetch' },
+            // max_uses caps server-side tool spirals: without it the model can run
+            // five searches when one would do, blowing the latency budget.
+            { type: 'web_search_20260209', name: 'web_search', max_uses: 2 },
+            { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 2 },
         ],
         messages,
     } as unknown as Anthropic.MessageCreateParamsNonStreaming;
 
-    let response = await anthropic.messages.create(params);
+    const deadline = Date.now() + CLAUDE_DEADLINE_MS;
+    let response = await withDeadline(anthropic.messages.create(params), deadline - Date.now());
 
     // Web search/fetch run server-side and can pause the turn; resume until done.
     let continuations = 0;
-    while (response.stop_reason === 'pause_turn' && continuations < 5) {
+    while (response.stop_reason === 'pause_turn' && continuations < 2) {
         continuations++;
-        response = await anthropic.messages.create({
-            ...params,
-            messages: [...messages, { role: 'assistant', content: response.content }] as ClaudeMessage[] as Anthropic.MessageParam[],
-        });
+        response = await withDeadline(
+            anthropic.messages.create({
+                ...params,
+                messages: [...messages, { role: 'assistant', content: response.content }] as ClaudeMessage[] as Anthropic.MessageParam[],
+            }),
+            deadline - Date.now()
+        );
     }
 
     // With web tools the response interleaves server_tool_use / result blocks with
@@ -147,7 +166,20 @@ async function callClaude(messages: ClaudeMessage[], withAttachment = false): Pr
         .map((b) => b.text)
         .join('')
         .trim();
-    if (!finalText) throw new Error('No text response from Claude');
+    if (!finalText) {
+        // Surface the real shape so an empty answer (e.g. the "who are you" report)
+        // is diagnosable instead of a silent "something went wrong".
+        console.error(
+            'Empty Claude text. stop_reason:',
+            response.stop_reason,
+            'blocks:',
+            JSON.stringify(response.content.map((b) => b.type))
+        );
+        if (response.stop_reason === 'max_tokens') {
+            throw new Error('Response was cut off. Please try a shorter question.');
+        }
+        throw new Error('No text response from Claude');
+    }
     return finalText;
 }
 
@@ -157,16 +189,11 @@ export async function processTextMessage(userId: string, text: string): Promise<
 
     await streakService.updateStreak(userId);
 
-    if (user.tokens < 1) throw new InsufficientTokensError();
-
+    // No token logic here. Charging and the balance guard live in the controllers
+    // (charge-on-start, refund-on-failure), so the service is a pure Claude call.
     const history = await convoRepo.getHistory(userId);
     const messages = buildClaudeMessages(history, text);
     const response = await callClaude(messages, false);
-
-    // Charge only after a successful response. If callClaude throws, no token is
-    // spent, so there is no refund path. Re-fetch to respect any streak reward.
-    const charged = await userRepo.findUser(userId);
-    await userRepo.updateUser(userId, { tokens: (charged?.tokens ?? user.tokens) - 1 });
 
     await convoRepo.appendMessages(userId, [
         { role: 'user', content: text },
@@ -187,8 +214,7 @@ export async function processMediaMessage(
 
     await streakService.updateStreak(userId);
 
-    if (user.tokens < 2) throw new InsufficientTokensError();
-
+    // No token logic here (see processTextMessage). Controllers own charge/refund.
     const mediaType = mimeType.startsWith('image/') ? 'image' : 'document';
     const attachmentContent = [
         {
@@ -201,10 +227,6 @@ export async function processMediaMessage(
     const history = await convoRepo.getHistory(userId);
     const messages = buildClaudeMessages(history, attachmentContent);
     const response = await callClaude(messages, true);
-
-    // Charge only after a successful response (see processTextMessage).
-    const charged = await userRepo.findUser(userId);
-    await userRepo.updateUser(userId, { tokens: (charged?.tokens ?? user.tokens) - 2 });
 
     await convoRepo.appendMessages(userId, [
         {

@@ -6,7 +6,6 @@ import * as transactionRepo from '../repositories/transaction.repository.js';
 import * as convoRepo from '../repositories/conversation.repository.js';
 import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
-import { InsufficientTokensError } from '../utils/errors.js';
 import { RequestState } from '../../models/requestState.js';
 import { PaymentState } from '../../models/paymentState.js';
 import VerificationState from '../../models/verificationState.js';
@@ -351,22 +350,26 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
                     return;
                 }
 
-                const response = await assistantService.processMediaMessage(
-                    userId,
-                    b64Media,
-                    mediaType,
-                    caption
-                );
-                await sendMsg(response, waId);
-            } catch (error) {
-                if (error instanceof InsufficientTokensError) {
-                    await sendMsg("You don't have enough tokens for media upload. Send /payments to top up.", waId);
-                } else {
-                    console.error('Error processing media:', error);
-                    const currentUser = await userRepo.findUser(userId);
-                    if (currentUser) await userRepo.updateUser(userId, { tokens: currentUser.tokens + 2 });
-                    await sendMsg('Sorry, there was an error processing your media. Your tokens have been refunded.', waId);
+                // Charge on start (balance guarded above). The inner try refunds and
+                // re-throws so the outer catch only handles messaging.
+                await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
+
+                try {
+                    const response = await assistantService.processMediaMessage(
+                        userId,
+                        b64Media,
+                        mediaType,
+                        caption
+                    );
+                    await sendMsg(response, waId);
+                } catch (innerError) {
+                    const refundUser = await userRepo.findUser(userId);
+                    if (refundUser) await userRepo.updateUser(userId, { tokens: refundUser.tokens + 2 });
+                    throw innerError;
                 }
+            } catch (error) {
+                console.error('Error processing media:', error);
+                await sendMsg('Sorry, there was an error processing your media. Your tokens have been refunded.', waId);
             }
             res.status(200).send('OK');
             return;
@@ -543,15 +546,25 @@ async function handleWaCommand(
             }
 
             try {
-                const response = await assistantService.processTextMessage(userId, body);
-                await sendMsg(response, waId);
-            } catch (error) {
-                if (error instanceof InsufficientTokensError) {
+                if (user!.tokens < 1) {
                     await sendMsg('You have run out of tokens. Top up by sending /payments.', waId);
-                } else {
-                    console.error('Error processing WA message:', error);
-                    await sendMsg('Sorry, something went wrong. Please try again.', waId);
+                    res.status(200).send('OK');
+                    return;
                 }
+                // Charge on start; inner try refunds and re-throws on failure.
+                await userRepo.updateUser(userId, { tokens: user!.tokens - 1 });
+
+                try {
+                    const response = await assistantService.processTextMessage(userId, body);
+                    await sendMsg(response, waId);
+                } catch (innerError) {
+                    const refundUser = await userRepo.findUser(userId);
+                    if (refundUser) await userRepo.updateUser(userId, { tokens: refundUser.tokens + 1 });
+                    throw innerError;
+                }
+            } catch (error) {
+                console.error('Error processing WA message:', error);
+                await sendMsg('Sorry, something went wrong. Please try again.', waId);
             }
             res.status(200).send('OK');
         }
