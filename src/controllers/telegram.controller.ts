@@ -489,18 +489,18 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
         const userId = PREFIX + ctx.from!.id;
         await ensureConnection();
 
-        // Atomically claim the request as cancelled. Scoping by userId enforces
-        // ownership, and status:'processing' guarantees only one path (this cancel,
-        // or the message handler's success/failure) ever transitions it — so the
-        // refund below runs at most once. Tokens are charged on start now, so a
-        // cancelled in-flight request must be refunded.
         const request = await RequestState.findOneAndUpdate(
             { _id: requestId, userId, status: 'processing' },
             { $set: { status: 'cancelled' } }
         );
 
         if (!request) {
-            await ctx.answerCbQuery('This request is already completed or cancelled.', { show_alert: true });
+            await ctx.answerCbQuery('This request already ended.');
+            try {
+                await ctx.deleteMessage();
+            } catch {
+                // ignore
+            }
             return;
         }
 
@@ -510,13 +510,15 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
             await userRepo.updateUser(userId, { tokens: user.tokens + refundAmount });
         }
 
-        await ctx.answerCbQuery('Request cancelled');
+        await ctx.answerCbQuery('Prompt cancelled. Tokens refunded.');
         try {
             await ctx.deleteMessage();
         } catch {
             // ignore
         }
-        await ctx.reply('You cancelled the prompt. You can try again.');
+        await ctx.reply(
+            `Prompt cancelled. ${refundAmount} token${refundAmount === 1 ? '' : 's'} refunded. You can try again.`
+        );
     } catch (error) {
         console.error('Error handling cancel request:', error);
         await ctx.answerCbQuery('An error occurred while cancelling', { show_alert: true });
@@ -536,6 +538,8 @@ bot.on(message('photo'), async (ctx) => {
 
     const userId = PREFIX + ctx.from!.id;
     const messageId = ctx.message.message_id;
+
+    await sweepStaleRequests(userId);
 
     const existingRequest = await RequestState.findOne({ userId, messageId });
     if (existingRequest) return;
@@ -570,11 +574,11 @@ bot.on(message('photo'), async (ctx) => {
             inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
         },
     });
+    requestState.thinkingMessageId = thinkingMsg.message_id;
+    requestState.chatId = ctx.chat.id;
 
     try {
         await requestState.save();
-        // Charge on start (balance was guarded above). Refunded by the catch on
-        // failure or by the cancel handler, each via an atomic claim.
         await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
 
         const imgBuffer = await downloadTelegramFile(bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } }, fileId);
@@ -631,6 +635,8 @@ bot.on(message('document'), async (ctx) => {
     const userId = PREFIX + ctx.from!.id;
     const messageId = ctx.message.message_id;
 
+    await sweepStaleRequests(userId);
+
     const existingRequest = await RequestState.findOne({ userId, messageId });
     if (existingRequest) return;
 
@@ -676,10 +682,11 @@ bot.on(message('document'), async (ctx) => {
             inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
         },
     });
+    requestState.thinkingMessageId = thinkingMsg.message_id;
+    requestState.chatId = ctx.chat.id;
 
     try {
         await requestState.save();
-        // Charge on start (balance guarded above); refunded on failure/cancel.
         await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
 
         const fileBuffer = await downloadTelegramFile(bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } }, fileId);
@@ -930,8 +937,50 @@ async function performVerification(ctx: any, user: IUser, reference: string, pro
     }
 }
 
+async function sweepStaleRequests(userId: string): Promise<void> {
+    const cutoff = new Date(Date.now() - 65_000);
+    const stale = await RequestState.find({ userId, status: 'processing', createdAt: { $lt: cutoff } });
+
+    for (const req of stale) {
+        const r = req as unknown as {
+            _id: unknown;
+            tokenCost?: number;
+            thinkingMessageId?: number;
+            chatId?: string | number;
+        };
+
+        const claimed = await RequestState.findOneAndUpdate(
+            { _id: r._id, status: 'processing' },
+            { $set: { status: 'failed', error: 'timed out (swept)' } }
+        );
+        if (!claimed) continue;
+
+        const refund = r.tokenCost ?? 1;
+        const user = await userRepo.findUser(userId);
+        if (user) await userRepo.updateUser(userId, { tokens: user.tokens + refund });
+
+        if (r.chatId != null && r.thinkingMessageId != null) {
+            try {
+                await bot.telegram.deleteMessage(r.chatId as number, r.thinkingMessageId);
+            } catch {
+                // ignore
+            }
+            try {
+                await bot.telegram.sendMessage(
+                    r.chatId as number,
+                    'Your previous question took too long and timed out. You were not charged. Please try again.'
+                );
+            } catch {
+                // ignore
+            }
+        }
+    }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
+    await sweepStaleRequests(userId);
+
     let user = await userRepo.findUser(userId);
     const isNewUser = !user;
     if (!user) {
@@ -955,6 +1004,8 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
             inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
         },
     });
+    requestState.thinkingMessageId = thinkingMsg.message_id;
+    requestState.chatId = ctx.chat.id;
 
     try {
         await requestState.save();
