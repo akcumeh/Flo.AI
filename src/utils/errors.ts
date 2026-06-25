@@ -31,3 +31,13 @@ export class UnauthorizedError extends AppError {
         super('Unauthorized', 401);
     }
 }
+
+// Thrown when a Claude call exceeds our internal deadline. We throw this a few
+// seconds BEFORE Vercel's hard maxDuration kill so the controller's catch block
+// still runs (deletes "Thinking...", tells the user, marks the request failed)
+// instead of the process being killed mid-await and leaving a zombie request.
+export class ClaudeTimeoutError extends AppError {
+    constructor() {
+        super('Claude request timed out', 504);
+    }
+}

@@ -17,6 +17,8 @@ const schema = new mongoose.Schema({
     mediaMimeType: String,
     mediaFileName: String,
     error: String,
+    thinkingMessageId: Number,
+    chatId: { type: mongoose.Schema.Types.Mixed },
     createdAt: { type: Date, default: Date.now, expires: 86400 },
 });
 

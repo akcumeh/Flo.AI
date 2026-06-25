@@ -7,7 +7,7 @@ import * as convoRepo from '../repositories/conversation.repository.js';
 import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
 import * as streakService from '../services/streak.service.js';
-import { InsufficientTokensError } from '../utils/errors.js';
+import { ClaudeTimeoutError } from '../utils/errors.js';
 import { RequestState } from '../../models/requestState.js';
 import { PaymentState } from '../../models/paymentState.js';
 import { MediaGroup } from '../../models/mediaGroup.js';
@@ -122,7 +122,13 @@ async function sendLongMessage(ctx: any, text: string, options: object = {}): Pr
     const chunks = splitMessage(text);
 
     if (chunks.length === 1) {
-        return ctx.reply(chunks[0], { ...options, parse_mode: 'Markdown' });
+        try {
+            return await ctx.reply(chunks[0], { ...options, parse_mode: 'Markdown' });
+        } catch (err) {
+            // Fall back to plain text so the user gets the answer unformatted.
+            console.error('Markdown parse failed, retrying as plain text:', (err as Error).message);
+            return ctx.reply(chunks[0], options);
+        }
     }
 
     const messages = [];
@@ -132,7 +138,13 @@ async function sendLongMessage(ctx: any, text: string, options: object = {}): Pr
         else if (i === chunks.length - 1) messageText = `_(continued from above)_\n\n${messageText}`;
         else messageText = `_(continued from above)_\n\n${messageText}\n\n_(continued...)_`;
 
-        const sent = await ctx.reply(messageText, { ...options, parse_mode: 'Markdown' });
+        let sent;
+        try {
+            sent = await ctx.reply(messageText, { ...options, parse_mode: 'Markdown' });
+        } catch (err) {
+            console.error('Markdown parse failed on chunk, retrying as plain text:', (err as Error).message);
+            sent = await ctx.reply(messageText, options);
+        }
         messages.push(sent);
         if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 100));
     }
@@ -477,35 +489,36 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
         const userId = PREFIX + ctx.from!.id;
         await ensureConnection();
 
-        const request = await RequestState.findById(requestId);
+        const request = await RequestState.findOneAndUpdate(
+            { _id: requestId, userId, status: 'processing' },
+            { $set: { status: 'cancelled' } }
+        );
+
         if (!request) {
-            await ctx.answerCbQuery('Request not found or already completed.', { show_alert: true });
-            return;
-        }
-        if ((request as unknown as { userId: string }).userId !== userId) {
-            await ctx.answerCbQuery('This is not your request.', { show_alert: true });
-            return;
-        }
-        if ((request as unknown as { status: string }).status !== 'processing') {
-            await ctx.answerCbQuery('This request is already completed or cancelled.', { show_alert: true });
+            await ctx.answerCbQuery('This request already ended.');
+            try {
+                await ctx.deleteMessage();
+            } catch {
+                // ignore
+            }
             return;
         }
 
-        await request.updateOne({ status: 'cancelled' });
-
+        const refundAmount = (request as unknown as { tokenCost?: number }).tokenCost ?? 1;
         const user = await userRepo.findUser(userId);
         if (user) {
-            const refundAmount = (request as unknown as { tokenCost?: number }).tokenCost ?? 1;
             await userRepo.updateUser(userId, { tokens: user.tokens + refundAmount });
         }
 
-        await ctx.answerCbQuery('Request cancelled');
+        await ctx.answerCbQuery('Prompt cancelled. Tokens refunded.');
         try {
             await ctx.deleteMessage();
         } catch {
             // ignore
         }
-        await ctx.reply('You cancelled the prompt. You can try again.');
+        await ctx.reply(
+            `Prompt cancelled. ${refundAmount} token${refundAmount === 1 ? '' : 's'} refunded. You can try again.`
+        );
     } catch (error) {
         console.error('Error handling cancel request:', error);
         await ctx.answerCbQuery('An error occurred while cancelling', { show_alert: true });
@@ -515,8 +528,18 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
 /* === Message Handlers === */
 
 bot.on(message('photo'), async (ctx) => {
+    // Grouped media arrives as one update per file sharing a media_group_id.
+    // Route them to the collector so the whole group is one request charged once,
+    // instead of each file being processed and charged separately.
+    if (ctx.message.media_group_id) {
+        await handleMediaGroupItem(ctx, 'photo');
+        return;
+    }
+
     const userId = PREFIX + ctx.from!.id;
     const messageId = ctx.message.message_id;
+
+    await sweepStaleRequests(userId);
 
     const existingRequest = await RequestState.findOne({ userId, messageId });
     if (existingRequest) return;
@@ -551,9 +574,12 @@ bot.on(message('photo'), async (ctx) => {
             inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
         },
     });
+    requestState.thinkingMessageId = thinkingMsg.message_id;
+    requestState.chatId = ctx.chat.id;
 
     try {
         await requestState.save();
+        await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
 
         const imgBuffer = await downloadTelegramFile(bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } }, fileId);
         const b64img = Buffer.from(imgBuffer).toString('base64');
@@ -563,11 +589,15 @@ bot.on(message('photo'), async (ctx) => {
 
         const response = await assistantService.processMediaMessage(userId, b64img, 'image/jpeg', caption);
 
-        const finalRequest = await RequestState.findById(requestState._id);
-        if (!finalRequest || (finalRequest as unknown as { status: string }).status !== 'processing') return;
+        // Atomically claim processing -> completed. If a cancel won the race it
+        // already flipped + refunded, so we must not send a (now free) answer.
+        const claimedDone = await RequestState.findOneAndUpdate(
+            { _id: requestState._id, status: 'processing' },
+            { $set: { status: 'completed' } }
+        );
+        if (!claimedDone) return;
 
         await Promise.all([
-            requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
             sendLongMessage(ctx, response),
         ]);
@@ -580,21 +610,32 @@ bot.on(message('photo'), async (ctx) => {
         setTimeout(() => streakService.checkStreakReward(userId).catch(console.error), 1000);
     } catch (error) {
         console.error('Error processing photo:', error);
-        await Promise.all([
-            requestState.updateOne({ status: 'failed', error: (error as Error).message }),
-            ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
-            ctx.reply(
-                error instanceof InsufficientTokensError
-                    ? "You don't have enough tokens for an image upload. Send /payments to top up."
-                    : 'Sorry, there was an error processing your image. You have not been charged.'
-            ),
-        ]);
+
+        const claimed = await RequestState.findOneAndUpdate(
+            { _id: requestState._id, status: 'processing' },
+            { $set: { status: 'failed', error: (error as Error).message } }
+        );
+        if (!claimed) return;
+
+        const refundUser = await userRepo.findUser(userId);
+        if (refundUser) await userRepo.updateUser(userId, { tokens: refundUser.tokens + 2 });
+
+        await ctx.deleteMessage(thinkingMsg.message_id).catch(() => {});
+        await ctx.reply('Sorry, there was an error processing your image. You have not been charged.');
     }
 });
 
 bot.on(message('document'), async (ctx) => {
+    // See the photo handler: grouped documents are collected, not processed singly.
+    if (ctx.message.media_group_id) {
+        await handleMediaGroupItem(ctx, 'document');
+        return;
+    }
+
     const userId = PREFIX + ctx.from!.id;
     const messageId = ctx.message.message_id;
+
+    await sweepStaleRequests(userId);
 
     const existingRequest = await RequestState.findOne({ userId, messageId });
     if (existingRequest) return;
@@ -641,9 +682,12 @@ bot.on(message('document'), async (ctx) => {
             inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
         },
     });
+    requestState.thinkingMessageId = thinkingMsg.message_id;
+    requestState.chatId = ctx.chat.id;
 
     try {
         await requestState.save();
+        await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
 
         const fileBuffer = await downloadTelegramFile(bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } }, fileId);
         const b64File = fileBuffer.toString('base64');
@@ -653,11 +697,15 @@ bot.on(message('document'), async (ctx) => {
 
         const response = await assistantService.processMediaMessage(userId, b64File, mimeType, caption);
 
-        const finalRequest = await RequestState.findById(requestState._id);
-        if (!finalRequest || (finalRequest as unknown as { status: string }).status !== 'processing') return;
+        // Atomically claim processing -> completed. If a cancel won the race it
+        // already flipped + refunded, so we must not send a (now free) answer.
+        const claimedDone = await RequestState.findOneAndUpdate(
+            { _id: requestState._id, status: 'processing' },
+            { $set: { status: 'completed' } }
+        );
+        if (!claimedDone) return;
 
         await Promise.all([
-            requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
             sendLongMessage(ctx, response),
         ]);
@@ -671,31 +719,33 @@ bot.on(message('document'), async (ctx) => {
     } catch (error) {
         console.error('Error processing document:', error);
 
+        const claimed = await RequestState.findOneAndUpdate(
+            { _id: requestState._id, status: 'processing' },
+            { $set: { status: 'failed', error: (error as Error).message } }
+        );
+        if (!claimed) return;
+
+        const refundUser = await userRepo.findUser(userId);
+        if (refundUser) await userRepo.updateUser(userId, { tokens: refundUser.tokens + 2 });
+
+        const msg = (error as Error).message.toLowerCase();
         let errorMessage: string;
-        if (error instanceof InsufficientTokensError) {
-            errorMessage = "You don't have enough tokens for a document upload. Send /payments to top up.";
+        if (msg.includes('timeout') || msg.includes('timed out')) {
+            errorMessage =
+                'Sorry, the request timed out while processing your document. Please try uploading it again or use a smaller file. You have not been charged.';
+        } else if (msg.includes('fetch failed') || msg.includes('download failed')) {
+            errorMessage =
+                'Sorry, there was a problem downloading your document. Please try uploading it again. You have not been charged.';
+        } else if (msg.includes('econnreset') || msg.includes('connection')) {
+            errorMessage =
+                'Sorry, there was a connection error. Please try uploading your document again. You have not been charged.';
         } else {
-            const msg = (error as Error).message.toLowerCase();
-            if (msg.includes('timeout') || msg.includes('timed out')) {
-                errorMessage =
-                    'Sorry, the request timed out while processing your document. Please try uploading it again or use a smaller file. You have not been charged.';
-            } else if (msg.includes('fetch failed') || msg.includes('download failed')) {
-                errorMessage =
-                    'Sorry, there was a problem downloading your document. Please try uploading it again. You have not been charged.';
-            } else if (msg.includes('econnreset') || msg.includes('connection')) {
-                errorMessage =
-                    'Sorry, there was a connection error. Please try uploading your document again. You have not been charged.';
-            } else {
-                errorMessage =
-                    'Sorry, there was an error processing your document. You have not been charged.';
-            }
+            errorMessage =
+                'Sorry, there was an error processing your document. You have not been charged.';
         }
 
-        await Promise.all([
-            requestState.updateOne({ status: 'failed', error: (error as Error).message }),
-            ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
-            ctx.reply(errorMessage),
-        ]);
+        await ctx.deleteMessage(thinkingMsg.message_id).catch(() => {});
+        await ctx.reply(errorMessage);
     }
 });
 
@@ -887,8 +937,50 @@ async function performVerification(ctx: any, user: IUser, reference: string, pro
     }
 }
 
+async function sweepStaleRequests(userId: string): Promise<void> {
+    const cutoff = new Date(Date.now() - 65_000);
+    const stale = await RequestState.find({ userId, status: 'processing', createdAt: { $lt: cutoff } });
+
+    for (const req of stale) {
+        const r = req as unknown as {
+            _id: unknown;
+            tokenCost?: number;
+            thinkingMessageId?: number;
+            chatId?: string | number;
+        };
+
+        const claimed = await RequestState.findOneAndUpdate(
+            { _id: r._id, status: 'processing' },
+            { $set: { status: 'failed', error: 'timed out (swept)' } }
+        );
+        if (!claimed) continue;
+
+        const refund = r.tokenCost ?? 1;
+        const user = await userRepo.findUser(userId);
+        if (user) await userRepo.updateUser(userId, { tokens: user.tokens + refund });
+
+        if (r.chatId != null && r.thinkingMessageId != null) {
+            try {
+                await bot.telegram.deleteMessage(r.chatId as number, r.thinkingMessageId);
+            } catch {
+                // ignore
+            }
+            try {
+                await bot.telegram.sendMessage(
+                    r.chatId as number,
+                    'Your previous question took too long and timed out. You were not charged. Please try again.'
+                );
+            } catch {
+                // ignore
+            }
+        }
+    }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
+    await sweepStaleRequests(userId);
+
     let user = await userRepo.findUser(userId);
     const isNewUser = !user;
     if (!user) {
@@ -912,17 +1004,34 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
             inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
         },
     });
+    requestState.thinkingMessageId = thinkingMsg.message_id;
+    requestState.chatId = ctx.chat.id;
 
     try {
         await requestState.save();
 
+        if (user.tokens < 1) {
+            await requestState.updateOne({ status: 'failed' });
+            await ctx.deleteMessage(thinkingMsg.message_id).catch(() => {});
+            await ctx.reply("You don't have enough tokens. Send /payments to top up.");
+            return;
+        }
+        // Charge on start. The catch refunds if anything below throws; the cancel
+        // handler refunds if the user bails. Both refund through an atomic claim of
+        // the request, so exactly one refund ever happens.
+        await userRepo.updateUser(userId, { tokens: user.tokens - 1 });
+
         const response = await assistantService.processTextMessage(userId, text);
 
-        const finalRequest = await RequestState.findById(requestState._id);
-        if (!finalRequest || (finalRequest as unknown as { status: string }).status !== 'processing') return;
+        // Atomically claim processing -> completed. If a cancel won the race it
+        // already flipped + refunded, so we must not send a (now free) answer.
+        const claimedDone = await RequestState.findOneAndUpdate(
+            { _id: requestState._id, status: 'processing' },
+            { $set: { status: 'completed' } }
+        );
+        if (!claimedDone) return;
 
         await Promise.all([
-            requestState.updateOne({ status: 'completed' }),
             ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
             sendLongMessage(ctx, response),
         ]);
@@ -936,20 +1045,25 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
     } catch (error) {
         console.error('Error processing message:', error);
 
-        if (error instanceof InsufficientTokensError) {
-            await Promise.all([
-                requestState.updateOne({ status: 'failed' }),
-                ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
-                ctx.reply("You don't have enough tokens. Send /payments to top up."),
-            ]);
-            return;
-        }
+        // Atomically flip processing -> failed. If the claim misses, the request
+        // was already cancelled/finalized elsewhere and refunded there, so we must
+        // not refund (or reply) again.
+        const claimed = await RequestState.findOneAndUpdate(
+            { _id: requestState._id, status: 'processing' },
+            { $set: { status: 'failed', error: (error as Error).message } }
+        );
+        if (!claimed) return;
 
-        await Promise.all([
-            requestState.updateOne({ status: 'failed', error: (error as Error).message }),
-            ctx.deleteMessage(thinkingMsg.message_id).catch(() => {}),
-            ctx.reply('Sorry, something went wrong. You have not been charged. Please try again.'),
-        ]);
+        const refundUser = await userRepo.findUser(userId);
+        if (refundUser) await userRepo.updateUser(userId, { tokens: refundUser.tokens + 1 });
+
+        const message =
+            error instanceof ClaudeTimeoutError
+                ? 'That question took too long to research and timed out. You have not been charged. Try asking it in smaller parts, or ask one thing at a time.'
+                : 'Sorry, something went wrong. You have not been charged. Please try again.';
+
+        await ctx.deleteMessage(thinkingMsg.message_id).catch(() => {});
+        await ctx.reply(message);
     }
 }
 
@@ -981,11 +1095,26 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
         const user = await userRepo.findUser(userId);
         if (!user) return;
 
+        const telegramId = userId.substring(PREFIX.length);
+
+        if (user.tokens < mg.tokenCost) {
+            mg.status = 'failed';
+            mg.error = 'Insufficient tokens';
+            await mg.save();
+            await bot.telegram.sendMessage(
+                telegramId,
+                "You don't have enough tokens for media processing. Send /payments to top up."
+            );
+            return;
+        }
+
         mg.status = 'processing';
         await mg.save();
 
-        const telegramId = userId.substring(PREFIX.length);
         const processingMsg = await bot.telegram.sendMessage(telegramId, 'Processing your media group...');
+
+        // Charge on start (balance guarded above); refunded in the catch on failure.
+        await userRepo.updateUser(userId, { tokens: user.tokens - mg.tokenCost });
 
         try {
             const mediaFiles: Array<{ b64: string; mimeType: string }> = [];
@@ -1000,17 +1129,16 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
                 });
             }
 
-            const firstFile = mediaFiles[0];
             let fileDescription = `I've received ${mediaFiles.length} files from the user.\n`;
             mediaFiles.forEach((file, i) => {
                 fileDescription += `File ${i + 1}: ${file.mimeType}\n`;
             });
             const fullPrompt = `${fileDescription}\n${mg.caption || 'Analyze these images together as a group.'} Please consider all images as part of a single request and provide one comprehensive response.`;
 
-            const claudeAnswer = await assistantService.processMediaMessage(
+            // Send every file in the group to Claude in one turn, not just the first.
+            const claudeAnswer = await assistantService.processMultiMediaMessage(
                 userId,
-                firstFile.b64,
-                firstFile.mimeType,
+                mediaFiles,
                 fullPrompt
             );
 
@@ -1027,11 +1155,9 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
         } catch (error) {
             console.error('Error processing media group:', error);
 
-            if (!(error instanceof InsufficientTokensError)) {
-                const currentUser = await userRepo.findUser(userId);
-                if (currentUser) {
-                    await userRepo.updateUser(userId, { tokens: currentUser.tokens + mg.tokenCost });
-                }
+            const refundUser = await userRepo.findUser(userId);
+            if (refundUser) {
+                await userRepo.updateUser(userId, { tokens: refundUser.tokens + mg.tokenCost });
             }
 
             mg.status = 'failed';
@@ -1045,9 +1171,7 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
             }
             await bot.telegram.sendMessage(
                 telegramId,
-                error instanceof InsufficientTokensError
-                    ? "You don't have enough tokens for media processing. Send /payments to top up."
-                    : 'Sorry, there was an error processing your media group. Your tokens have been refunded.'
+                'Sorry, there was an error processing your media group. Your tokens have been refunded.'
             );
         }
     } catch (error) {

@@ -53,11 +53,9 @@ const transactionSchema = new mongoose.Schema({
     }
 });
 
-// Add index for efficient queries
 transactionSchema.index({ status: 1 });
 transactionSchema.index({ expiresAt: 1 });
 
-// Method to check if transaction has expired
 transactionSchema.methods.hasExpired = function () {
     return new Date() > this.expiresAt;
 };

@@ -111,6 +111,8 @@ export interface IRequestState extends Document {
     mediaMimeType?: string;
     mediaFileName?: string;
     error?: string;
+    thinkingMessageId?: number;
+    chatId?: string | number;
     createdAt: Date;
 }
 
