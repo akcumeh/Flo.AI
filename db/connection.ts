@@ -5,16 +5,19 @@ dotenv.config();
 
 let isConnected = false;
 
-export const ensureConnection = async () => {
+export const ensureConnection = async (): Promise<void> => {
     if (isConnected && mongoose.connection.readyState === 1) {
         return;
     }
 
+    const uri = process.env['MONGODB_URI'];
+    if (!uri) throw new Error('Missing required environment variable: MONGODB_URI');
+
     try {
-        await mongoose.connect(process.env.MONGODB_URI, {
+        await mongoose.connect(uri, {
             family: 4,
             directConnection: false,
-            serverSelectionTimeoutMS: 5000
+            serverSelectionTimeoutMS: 5000,
         });
         isConnected = true;
         console.log('Connected to MongoDB');

@@ -96,6 +96,7 @@ export interface ITransaction extends Document {
     gatewayResponse?: object;
     metadata?: object;
     createdAt: Date;
+    expiresAt: Date;
     hasExpired(): boolean;
 }
 
@@ -148,6 +149,63 @@ export interface IVerificationState extends Document {
     status: 'verified' | 'failed';
     tokens: number;
     verifiedAt: Date;
+}
+
+// Prep session types
+
+export type QuestionType = 'mcq' | 'theory' | 'short';
+
+export interface ExamQuestion {
+    type: QuestionType;
+    question: string;
+    options?: string[]; // present for mcq
+    answer: string; // the correct answer (for mcq, the full text of the correct option)
+    marks: number;
+    difficulty: 'easy' | 'medium' | 'hard';
+    topic: string;
+    sourceLabel: string; // which doc/image this came from, captured at generation time
+}
+
+export interface ExamAnswer {
+    index: number;
+    userAnswer: string;
+    correct: boolean;
+    awardedMarks: number;
+}
+
+export interface SessionFile {
+    anthropicFileId: string;
+    fileName: string | null; // null/generic for images (no usable filename)
+    kind: 'image' | 'document'; // drives the Claude content-block shape on reference
+}
+
+export interface ISession extends Document {
+    userId: string;
+    platform: 'tg' | 'wa';
+    mode: 'prep'; // extensible: grader, research
+    status: 'collecting' | 'choosing' | 'quizzing' | 'completed';
+    fileIds: SessionFile[];
+    requestedCount: number;
+    generatedCount: number;
+    questions: ExamQuestion[];
+    currentIndex: number;
+    answers: ExamAnswer[];
+    score: number;
+    charged: boolean; // ensures the deferred token charge is applied exactly once
+    filesReleased: boolean; // ensures Anthropic-stored files are deleted exactly once
+    expiresAt: Date;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface IQuizResult extends Document {
+    userId: string;
+    mode: string;
+    score: number;
+    total: number;
+    failedTopics: string[];
+    sourceDocs: string[];
+    createdAt: Date;
 }
 
 // DTOs

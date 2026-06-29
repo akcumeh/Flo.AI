@@ -2,7 +2,10 @@
 node_modules
 .vercel
 .claude
+dist
 flutterwave-keys.txt
 assets/broadcast-failed.txt
 
 .env*
+WORKPLAN.md
+flo.ai-29-06-26.zip

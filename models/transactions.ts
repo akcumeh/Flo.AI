@@ -1,0 +1,33 @@
+import mongoose from 'mongoose';
+import type { ITransaction } from '../src/types/index.js';
+
+const transactionSchema = new mongoose.Schema({
+    userId: { type: String, required: true, index: true },
+    reference: { type: String, required: true, unique: true, index: true },
+    amount: { type: Number, required: true },
+    tokens: { type: Number, required: true },
+    email: { type: String },
+    method: { type: String, enum: ['card', 'bank_transfer'] },
+    status: { type: String, enum: ['pending', 'success', 'failed'], default: 'pending' },
+    gatewayResponse: { type: Object },
+    metadata: { type: Object },
+    createdAt: { type: Date, default: Date.now },
+    expiresAt: {
+        type: Date,
+        default: function () {
+            return new Date(Date.now() + 3600000); // 1 hour from creation
+        },
+    },
+    completedAt: { type: Date },
+});
+
+transactionSchema.index({ status: 1 });
+transactionSchema.index({ expiresAt: 1 });
+
+transactionSchema.methods['hasExpired'] = function (this: ITransaction): boolean {
+    return new Date() > this.expiresAt;
+};
+
+export const Transaction = (
+    mongoose.models['Transaction'] ?? mongoose.model('Transaction', transactionSchema)
+) as mongoose.Model<ITransaction>;
