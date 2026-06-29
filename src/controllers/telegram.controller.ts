@@ -7,6 +7,7 @@ import * as convoRepo from '../repositories/conversation.repository.js';
 import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
 import * as streakService from '../services/streak.service.js';
+import * as prepService from '../services/prep.service.js';
 import { ClaudeTimeoutError } from '../utils/errors.js';
 import { RequestState } from '../../models/requestState.js';
 import { PaymentState } from '../../models/paymentState.js';
@@ -14,7 +15,7 @@ import { MediaGroup } from '../../models/mediaGroup.js';
 import VerificationState from '../../models/verificationState.js';
 import { downloadTelegramFile } from '../../utils/getMsgContent.js';
 import { ensureConnection } from '../../db/connection.js';
-import type { IUser, ConversationMessage } from '../types/index.js';
+import type { IUser, ConversationMessage, ISession } from '../types/index.js';
 
 export const bot = new Telegraf(config.botToken);
 const PREFIX = 'tg-';
@@ -41,6 +42,7 @@ Here are a few helpful commands for a smooth experience:
 /tokens - See how many tokens you have left.
 /payments - Top up your tokens.
 /conversations - View and continue previous conversations.
+/prep - Generate a scored quiz from your own materials.
 /stem - Answer math & science questions even better. [coming soon]
 /research - Get help with your research/thesis/project. [coming soon]
 /transactions - View your transaction history
@@ -362,6 +364,66 @@ bot.command('research', async (ctx) => {
     ctx.reply('The research feature is coming soon :)');
 });
 
+bot.command('prep', async (ctx) => {
+    try {
+        const userId = PREFIX + ctx.from!.id;
+        await ensureConnection();
+
+        const active = await prepService.getActiveSession(userId);
+        if (active) {
+            await ctx.reply('You already have a prep session running. Send /exit to end it first.');
+            return;
+        }
+
+        const user = await userRepo.findUser(userId);
+        if (!user) {
+            await ctx.reply('You need to start the bot first. Please send /start.');
+            return;
+        }
+        if (user.tokens < 2) {
+            await ctx.reply('You need at least 2 tokens to use prep mode. Send /payments to top up.');
+            return;
+        }
+
+        const session = await prepService.start(userId, 'tg');
+        const count = parseQuestionCount(ctx.message.text);
+        if (count) session.requestedCount = count;
+        await session.save();
+
+        await ctx.reply(
+            `Prep mode is on.\n\nUpload up to ${prepService.MAX_FILES} files (PDFs or images) to base your questions on. Each generated question costs 1 token.\n\nWhen you've sent your files, tell me how many questions you want (a number from 1 to ${prepService.MAX_QUESTIONS}).\n\nSend /exit at any time to leave prep mode.`
+        );
+    } catch (error) {
+        console.error('Error in /prep command:', error);
+        await ctx.reply('Sorry, something went wrong starting prep mode. Please try again.');
+    }
+});
+
+bot.command('exit', async (ctx) => {
+    try {
+        const userId = PREFIX + ctx.from!.id;
+        await ensureConnection();
+
+        const session = await prepService.getActiveSession(userId);
+        if (!session) {
+            await ctx.reply("You're not in a prep session right now.");
+            return;
+        }
+
+        const result = await prepService.exit(session);
+        if (result.wasCompleted) {
+            await ctx.reply("Prep session closed. You're back to normal chat, ask me anything!");
+        } else {
+            await ctx.reply(
+                `Prep session ended. ${result.cost} token${result.cost === 1 ? '' : 's'} charged. You now have ${result.balanceAfter} tokens. Back to normal chat!`
+            );
+        }
+    } catch (error) {
+        console.error('Error in /exit command:', error);
+        await ctx.reply('Sorry, something went wrong ending the session.');
+    }
+});
+
 bot.command('feedback', async (ctx) => {
     ctx.reply(
         'Enjoying Florence*?\n\nEven if you absolutely hate it, please let us know:\n\nhttps://forms.gle/SwhApkszXZJGcRyP7\n\nYour feedback is greatly appreciated and helps us improve Florence*. Thank you for your input.'
@@ -377,6 +439,8 @@ bot.command('help', async (ctx) => {
 /payments - Top up your tokens\n \
 /conversations - View and continue previous conversations\n\
 /transactions - View your transaction history\n\
+/prep - Generate a scored quiz from your own materials\n\
+/exit - Leave prep mode\n\
 /stem - Answer math & science questions even better [coming soon]\n \
 /research - Get help with your research/thesis/project [coming soon]\n \
 /feedback - Send feedback to the developers\n \
@@ -522,9 +586,51 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
     }
 });
 
+bot.action(/^exam_(\d+)$/, async (ctx) => {
+    try {
+        const userId = PREFIX + ctx.from!.id;
+        await ensureConnection();
+
+        const session = await prepService.getActiveSession(userId);
+        if (!session || session.status !== 'quizzing') {
+            await ctx.answerCbQuery('This quiz has already ended.');
+            return;
+        }
+
+        const question = prepService.currentQuestion(session);
+        const optIndex = parseInt(ctx.match![1], 10);
+        const chosen = question?.options?.[optIndex];
+        if (!question || chosen === undefined) {
+            await ctx.answerCbQuery('That option is no longer available.');
+            return;
+        }
+
+        await ctx.answerCbQuery();
+        // Drop the keyboard so the question can't be answered twice.
+        try {
+            await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+        } catch {
+            // ignore
+        }
+
+        await processPrepAnswer(ctx, session, chosen);
+    } catch (error) {
+        console.error('Error handling prep answer:', error);
+        await ctx.answerCbQuery('Something went wrong grading that answer.', { show_alert: true });
+    }
+});
+
 /* === Message Handlers === */
 
 bot.on(message('photo'), async (ctx) => {
+    // An active prep session (or a /prep caption) claims the upload before
+    // the normal media/charge path runs.
+    {
+        const exUserId = PREFIX + ctx.from!.id;
+        const exCaption = ctx.message.caption ?? '';
+        if (await maybeHandlePrepUpload(ctx, exUserId, exCaption, 'photo')) return;
+    }
+
     // Grouped media arrives as one update per file sharing a media_group_id.
     // Route them to the collector so the whole group is one request charged once,
     // instead of each file being processed and charged separately.
@@ -623,6 +729,13 @@ bot.on(message('photo'), async (ctx) => {
 });
 
 bot.on(message('document'), async (ctx) => {
+    // Prep session (or /prep caption) claims the upload first.
+    {
+        const exUserId = PREFIX + ctx.from!.id;
+        const exCaption = ctx.message.caption ?? '';
+        if (await maybeHandlePrepUpload(ctx, exUserId, exCaption, 'document')) return;
+    }
+
     // See the photo handler: grouped documents are collected, not processed singly.
     if (ctx.message.media_group_id) {
         await handleMediaGroupItem(ctx, 'document');
@@ -757,6 +870,13 @@ bot.on('message', async (ctx) => {
 
         const existingRequest = await RequestState.findOne({ userId, messageId });
         if (existingRequest) return;
+
+        // Active prep session intercepts all plain text (counts, answers).
+        const session = await prepService.getActiveSession(userId);
+        if (session) {
+            await handlePrepText(ctx, session, msg.text ?? '');
+            return;
+        }
 
         const paymentState = await PaymentState.findOne({ userId });
         if (paymentState && (paymentState as unknown as { step: string }).step !== 'init') {
@@ -1230,6 +1350,203 @@ async function handleMediaGroupItem(ctx: any, mediaType: 'photo' | 'document'): 
 
     if (currentMg.mediaItems.length === 1) {
         setTimeout(() => processMediaGroup(mediaGroupId, userId), 2000);
+    }
+}
+
+/* === Prep Helpers === */
+
+function parseQuestionCount(text: string | undefined): number | null {
+    if (!text) return null;
+    const match = text.match(/(\d+)/);
+    if (!match) return null;
+    const n = parseInt(match[1], 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function truncateButton(text: string, max = 90): string {
+    return text.length > max ? text.slice(0, max - 1) + '…' : text;
+}
+
+// Returns true if this upload was claimed by prep mode (so the normal media
+// path must not run).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function maybeHandlePrepUpload(
+    ctx: any,
+    userId: string,
+    caption: string,
+    mediaType: 'photo' | 'document'
+): Promise<boolean> {
+    await ensureConnection();
+    let session = await prepService.getActiveSession(userId);
+    const startsPrep = /^\/prep\b/i.test(caption.trim());
+    if (!session && !startsPrep) return false;
+
+    if (!session) {
+        const user = await userRepo.findUser(userId);
+        if (!user) {
+            await ctx.reply('Please send /start first.');
+            return true;
+        }
+        if (user.tokens < 2) {
+            await ctx.reply('You need at least 2 tokens to use prep mode. Send /payments to top up.');
+            return true;
+        }
+        session = await prepService.start(userId, 'tg');
+        const n = parseQuestionCount(caption);
+        if (n) {
+            session.requestedCount = n;
+            await session.save();
+        }
+    }
+
+    if (session.status === 'quizzing') {
+        await ctx.reply("You're in the middle of a quiz. Answer the current question, or send /exit to stop.");
+        return true;
+    }
+
+    if (session.fileIds.length >= prepService.MAX_FILES) {
+        await ctx.reply(
+            `You've already added the maximum of ${prepService.MAX_FILES} files. Tell me how many questions you'd like.`
+        );
+        return true;
+    }
+
+    try {
+        let fileId: string;
+        let fileName: string;
+        let mimeType: string;
+        if (mediaType === 'photo') {
+            fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+            fileName = `image-${Date.now()}.jpg`;
+            mimeType = 'image/jpeg';
+        } else {
+            fileId = ctx.message.document.file_id;
+            fileName = ctx.message.document.file_name || 'document.pdf';
+            mimeType = ctx.message.document.mime_type || 'application/pdf';
+            if (mimeType !== 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')) {
+                await ctx.reply('For prep mode I can only use images and PDF documents. Please send a PDF or image.');
+                return true;
+            }
+        }
+
+        const buffer = await downloadTelegramFile(
+            bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } },
+            fileId
+        );
+        const { count } = await prepService.addFile(session, buffer, fileName, mimeType);
+
+        const more =
+            session.requestedCount > 0
+                ? `Send "go" to generate ${session.requestedCount} question${session.requestedCount === 1 ? '' : 's'}, or upload more files.`
+                : `Tell me how many questions you'd like (1-${prepService.MAX_QUESTIONS}), or upload more files. Each question costs 1 token.`;
+        await ctx.reply(`File ${count}/${prepService.MAX_FILES} added. ${more}`);
+    } catch (error) {
+        console.error('Prep upload error:', error);
+        await ctx.reply('Sorry, I could not add that file. Please try again.');
+    }
+    return true;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handlePrepText(ctx: any, session: ISession, text: string): Promise<void> {
+    if (session.status === 'quizzing') {
+        await processPrepAnswer(ctx, session, text);
+        return;
+    }
+
+    if (session.fileIds.length === 0) {
+        await ctx.reply(
+            'Upload at least one file (PDF or image) before we start, or send /exit to leave prep mode.'
+        );
+        return;
+    }
+
+    const n = parseQuestionCount(text);
+    const go = /^(go|start|yes|y)$/i.test(text.trim());
+    if (n) {
+        await startPrepQuiz(ctx, session, n);
+    } else if (go && session.requestedCount > 0) {
+        await startPrepQuiz(ctx, session, session.requestedCount);
+    } else {
+        await ctx.reply(
+            `How many questions would you like? Send a number from 1 to ${prepService.MAX_QUESTIONS}. Each one costs 1 token.`
+        );
+    }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function startPrepQuiz(ctx: any, session: ISession, requested: number): Promise<void> {
+    const effective = await prepService.setCount(session, requested);
+    if (effective < requested) {
+        await ctx.reply(
+            `You have enough tokens for ${effective} question${effective === 1 ? '' : 's'} right now, so I'll generate that many.`
+        );
+    }
+    await ctx.reply(
+        `Generating ${effective} question${effective === 1 ? '' : 's'} from your material. This can take a moment...`
+    );
+
+    try {
+        await prepService.generate(session);
+    } catch (error) {
+        console.error('Prep generation failed:', error);
+        session.status = 'collecting';
+        await session.save();
+        await ctx.reply(
+            'Sorry, I had trouble generating questions from those files. Send a number to try again, or /exit to leave.'
+        );
+        return;
+    }
+
+    await sendCurrentPrepQuestion(ctx, session);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function sendCurrentPrepQuestion(ctx: any, session: ISession): Promise<void> {
+    const q = prepService.currentQuestion(session);
+    if (!q) return;
+
+    const number = session.currentIndex + 1;
+    const total = session.questions.length;
+    const header = `Question ${number}/${total}\n\n${q.question}`;
+
+    if (q.type === 'mcq' && q.options && q.options.length > 0) {
+        const rows = q.options.map((opt, i) => [
+            { text: truncateButton(`${String.fromCharCode(65 + i)}. ${opt}`), callback_data: `exam_${i}` },
+        ]);
+        await ctx.reply(header, { reply_markup: { inline_keyboard: rows } });
+    } else {
+        await sendLongMessage(ctx, `${header}\n\nType your answer.`);
+    }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function processPrepAnswer(ctx: any, session: ISession, answerText: string): Promise<void> {
+    const thinking = await ctx.reply('Checking your answer...');
+    let outcome;
+    try {
+        outcome = await prepService.submitAnswer(session, answerText);
+    } catch (error) {
+        console.error('Prep submitAnswer failed:', error);
+        await ctx.deleteMessage(thinking.message_id).catch(() => {});
+        await ctx.reply('Sorry, I had trouble grading that. Please try answering again.');
+        return;
+    }
+    await ctx.deleteMessage(thinking.message_id).catch(() => {});
+
+    const verdict = outcome.correct ? 'Correct!' : 'Not quite.';
+    await sendLongMessage(ctx, `${verdict}\n\nSource: ${outcome.sourceLabel}\n\n${outcome.explanation}`);
+
+    if (outcome.done) {
+        const result = await prepService.complete(session);
+        let msg = `Quiz complete! You scored ${result.correctCount}/${result.total}.`;
+        if (result.failedSources.length > 0) {
+            msg += `\n\nWorth revisiting: ${result.failedSources.join(', ')}.`;
+        }
+        msg += `\n\n${result.cost} token${result.cost === 1 ? '' : 's'} charged. You have ${result.balanceAfter} tokens left.\n\nYou're back to normal chat. Send /prep to run another quiz.`;
+        await sendLongMessage(ctx, msg);
+    } else {
+        await sendCurrentPrepQuestion(ctx, session);
     }
 }
 

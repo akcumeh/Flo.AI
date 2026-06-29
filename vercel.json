@@ -5,7 +5,7 @@
             "maxDuration": 60
         },
         "api/wa.ts": {
-            "maxDuration": 30
+            "maxDuration": 60
         },
         "api/analytics-weekly.ts": {
             "maxDuration": 30

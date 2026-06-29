@@ -6,11 +6,12 @@ import * as transactionRepo from '../repositories/transaction.repository.js';
 import * as convoRepo from '../repositories/conversation.repository.js';
 import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
+import * as prepService from '../services/prep.service.js';
 import { RequestState } from '../../models/requestState.js';
 import { PaymentState } from '../../models/paymentState.js';
 import VerificationState from '../../models/verificationState.js';
 import { ensureConnection } from '../../db/connection.js';
-import type { ConversationMessage } from '../types/index.js';
+import type { ConversationMessage, ISession } from '../types/index.js';
 
 const META_API_BASE = 'https://graph.facebook.com/v21.0';
 
@@ -228,6 +229,7 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
         let numMedia = 0;
         let mediaId: string | null = null;
         let mediaType: string | null = null;
+        let interactiveId: string | null = null;
 
         if (message.type === 'text') {
             body = message.text?.body || '';
@@ -242,10 +244,12 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
             mediaType = message.document!.mime_type;
             body = message.document!.caption || '';
         } else if (message.type === 'interactive') {
-            body =
-                message.interactive?.button_reply?.title ||
-                message.interactive?.list_reply?.title ||
-                '';
+            const interactive = message.interactive as {
+                button_reply?: { id?: string; title?: string };
+                list_reply?: { id?: string; title?: string };
+            };
+            interactiveId = interactive?.list_reply?.id ?? interactive?.button_reply?.id ?? null;
+            body = interactive?.button_reply?.title || interactive?.list_reply?.title || '';
         } else {
             res.status(200).send('OK');
             return;
@@ -273,6 +277,34 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
             await sendTemplate('main_menu_hxcc21ab7ce18151cf00d9db0ebcd3fb66', 'en', waId, [
                 user.tokens.toString(),
             ]);
+            res.status(200).send('OK');
+            return;
+        }
+
+        // Prep session routing takes precedence over payment/media/chat paths.
+        const exSession = await prepService.getActiveSession(userId);
+        const startsPrep = /^\/prep\b/i.test(body.trim());
+        const isExit = /^\/exit\b/i.test(body.trim());
+
+        if (isExit) {
+            if (exSession) {
+                const result = await prepService.exit(exSession);
+                await sendMsg(
+                    result.wasCompleted
+                        ? "Prep session closed. You're back to normal chat, ask me anything!"
+                        : `Prep session ended. ${result.cost} token${result.cost === 1 ? '' : 's'} charged. You now have ${result.balanceAfter} tokens. Back to normal chat!`,
+                    waId
+                );
+            } else {
+                await sendMsg("You're not in a prep session right now.", waId);
+            }
+            res.status(200).send('OK');
+            return;
+        }
+
+        if (exSession || startsPrep) {
+            const media = numMedia > 0 && mediaId && mediaType ? { mediaId, mediaType } : null;
+            await handleWaPrep(waId, userId, exSession, body, interactiveId, media);
             res.status(200).send('OK');
             return;
         }
@@ -531,7 +563,7 @@ async function handleWaCommand(
                 user!.tokens.toString(),
             ]);
             await sendMsg(
-                `Here are the available commands:\n\n/start - Start a NEW conversation\n/about - Learn about Florence*\n/tokens - Check your token balance\n/payments - Buy more tokens\n/streak - Check your daily streak\n/transactions - View payment history\n/conversations - View recent conversations\n/verify [ref] - Verify a payment\n/help - Show this message`,
+                `Here are the available commands:\n\n/start - Start a NEW conversation\n/about - Learn about Florence*\n/tokens - Check your token balance\n/payments - Buy more tokens\n/streak - Check your daily streak\n/transactions - View payment history\n/conversations - View recent conversations\n/prep - Generate a scored quiz from your own materials\n/exit - Leave prep mode\n/verify [ref] - Verify a payment\n/help - Show this message`,
                 waId
             );
             res.status(200).send('OK');
@@ -627,6 +659,221 @@ async function handleWaVerify(
         await sendMsg(`Bank Transfer\n\n${result.message}`, waId);
     } else {
         await sendMsg(`Verification Failed\n\n${result.message}`, waId);
+    }
+}
+
+/* === Prep === */
+
+function parseQuestionCount(text: string): number | null {
+    const match = text.match(/(\d+)/);
+    if (!match) return null;
+    const n = parseInt(match[1], 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function truncate(text: string, max: number): string {
+    return text.length > max ? text.slice(0, max - 1) + '…' : text;
+}
+
+// MCQ as a WhatsApp interactive list message (Meta caps reply buttons at 3, so
+// list messages are the only way to offer 4 options). Row titles are the option
+// letters; the full option text rides in the description.
+async function sendWaList(waId: string, bodyText: string, options: string[]): Promise<void> {
+    const rows = options.slice(0, 10).map((opt, i) => ({
+        id: `exam_${i}`,
+        title: String.fromCharCode(65 + i),
+        description: truncate(opt, 72),
+    }));
+
+    const result = await sendMetaRequest(`${config.metaPhoneNumberId}/messages`, {
+        messaging_product: 'whatsapp',
+        to: waId.replace('wa:', ''),
+        type: 'interactive',
+        interactive: {
+            type: 'list',
+            body: { text: truncate(bodyText, 1024) },
+            action: { button: 'Choose answer', sections: [{ title: 'Options', rows }] },
+        },
+    });
+    if (!result.success) throw new Error(result.error ?? 'Failed to send list message');
+}
+
+async function handleWaPrep(
+    waId: string,
+    userId: string,
+    sessionIn: ISession | null,
+    body: string,
+    interactiveId: string | null,
+    media: { mediaId: string; mediaType: string } | null
+): Promise<void> {
+    let session = sessionIn;
+
+    if (!session) {
+        const user = await userRepo.findUser(userId);
+        if (!user) {
+            await sendMsg('Please send /start first.', waId);
+            return;
+        }
+        if (user.tokens < 2) {
+            await sendMsg('You need at least 2 tokens to use prep mode. Send /payments to top up.', waId);
+            return;
+        }
+        session = await prepService.start(userId, 'wa');
+        const n = parseQuestionCount(body);
+        if (n) {
+            session.requestedCount = n;
+            await session.save();
+        }
+        if (!media) {
+            await sendMsg(
+                `Prep mode is on.\n\nUpload up to ${prepService.MAX_FILES} files (PDFs or images) to base your questions on. Each generated question costs 1 token.\n\nWhen you've sent your files, tell me how many questions you want (1-${prepService.MAX_QUESTIONS}).\n\nSend /exit to leave prep mode.`,
+                waId
+            );
+            return;
+        }
+    }
+
+    // Media upload
+    if (media) {
+        if (session.status === 'quizzing') {
+            await sendMsg("You're in the middle of a quiz. Answer the current question, or send /exit to stop.", waId);
+            return;
+        }
+        if (session.fileIds.length >= prepService.MAX_FILES) {
+            await sendMsg(
+                `You've already added the maximum of ${prepService.MAX_FILES} files. Tell me how many questions you'd like.`,
+                waId
+            );
+            return;
+        }
+        if (!media.mediaType.startsWith('image/') && media.mediaType !== 'application/pdf') {
+            await sendMsg('For prep mode I can only use images and PDF documents.', waId);
+            return;
+        }
+        try {
+            const buffer = await downloadMedia(media.mediaId);
+            const fileName =
+                media.mediaType === 'application/pdf' ? `document-${Date.now()}.pdf` : `image-${Date.now()}.jpg`;
+            const { count } = await prepService.addFile(session, buffer, fileName, media.mediaType);
+            const more =
+                session.requestedCount > 0
+                    ? `Reply "go" to generate ${session.requestedCount} question${session.requestedCount === 1 ? '' : 's'}, or upload more files.`
+                    : `Tell me how many questions you'd like (1-${prepService.MAX_QUESTIONS}), or upload more files. Each question costs 1 token.`;
+            await sendMsg(`File ${count}/${prepService.MAX_FILES} added. ${more}`, waId);
+        } catch (error) {
+            console.error('WA prep upload error:', error);
+            await sendMsg('Sorry, I could not add that file. Please try again.', waId);
+        }
+        return;
+    }
+
+    // Quiz answer
+    if (session.status === 'quizzing') {
+        let answer = body;
+        const idMatch = interactiveId?.match(/^exam_(\d+)$/);
+        if (idMatch) {
+            const i = parseInt(idMatch[1], 10);
+            const q = prepService.currentQuestion(session);
+            answer = q?.options?.[i] ?? body;
+        }
+        await processWaPrepAnswer(waId, session, answer);
+        return;
+    }
+
+    // Collecting / choosing: expect a count or "go"
+    if (session.fileIds.length === 0) {
+        await sendMsg('Upload at least one file (PDF or image) before we start, or send /exit to leave.', waId);
+        return;
+    }
+    const count = parseQuestionCount(body);
+    const go = /^(go|start|yes|y)$/i.test(body.trim());
+    if (count) {
+        await startWaPrepQuiz(waId, session, count);
+    } else if (go && session.requestedCount > 0) {
+        await startWaPrepQuiz(waId, session, session.requestedCount);
+    } else {
+        await sendMsg(
+            `How many questions would you like? Send a number from 1 to ${prepService.MAX_QUESTIONS}. Each costs 1 token.`,
+            waId
+        );
+    }
+}
+
+async function startWaPrepQuiz(waId: string, session: ISession, requested: number): Promise<void> {
+    const effective = await prepService.setCount(session, requested);
+    if (effective < requested) {
+        await sendMsg(
+            `You have enough tokens for ${effective} question${effective === 1 ? '' : 's'} right now, so I'll generate that many.`,
+            waId
+        );
+    }
+    await sendMsg(
+        `Generating ${effective} question${effective === 1 ? '' : 's'} from your material. This can take a moment...`,
+        waId
+    );
+
+    try {
+        await prepService.generate(session);
+    } catch (error) {
+        console.error('WA prep generation failed:', error);
+        session.status = 'collecting';
+        await session.save();
+        await sendMsg(
+            'Sorry, I had trouble generating questions from those files. Send a number to try again, or /exit to leave.',
+            waId
+        );
+        return;
+    }
+
+    await sendWaQuestion(waId, session);
+}
+
+async function sendWaQuestion(waId: string, session: ISession): Promise<void> {
+    const q = prepService.currentQuestion(session);
+    if (!q) return;
+
+    const number = session.currentIndex + 1;
+    const total = session.questions.length;
+    const text = `Question ${number}/${total}\n\n${q.question}`;
+
+    if (q.type === 'mcq' && q.options && q.options.length > 0) {
+        try {
+            await sendWaList(waId, text, q.options);
+        } catch (error) {
+            console.error('WA list message failed, falling back to text:', error);
+            const lettered = q.options
+                .map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`)
+                .join('\n');
+            await sendMsg(`${text}\n\n${lettered}\n\nReply with the letter or text of your answer.`, waId);
+        }
+    } else {
+        await sendMsg(`${text}\n\nReply with your answer.`, waId);
+    }
+}
+
+async function processWaPrepAnswer(waId: string, session: ISession, answer: string): Promise<void> {
+    let outcome;
+    try {
+        outcome = await prepService.submitAnswer(session, answer);
+    } catch (error) {
+        console.error('WA prep submitAnswer failed:', error);
+        await sendMsg('Sorry, I had trouble grading that. Please try answering again.', waId);
+        return;
+    }
+
+    const verdict = outcome.correct ? 'Correct!' : 'Not quite.';
+    await sendMsg(`${verdict}\n\nSource: ${outcome.sourceLabel}\n\n${outcome.explanation}`, waId);
+
+    if (outcome.done) {
+        const result = await prepService.complete(session);
+        let msg = `Quiz complete! You scored ${result.correctCount}/${result.total}.`;
+        if (result.failedSources.length > 0) {
+            msg += `\n\nWorth revisiting: ${result.failedSources.join(', ')}.`;
+        }
+        msg += `\n\n${result.cost} token${result.cost === 1 ? '' : 's'} charged. You have ${result.balanceAfter} tokens left.\n\nYou're back to normal chat. Send /prep to run another quiz.`;
+        await sendMsg(msg, waId);
+    } else {
+        await sendWaQuestion(waId, session);
     }
 }
 

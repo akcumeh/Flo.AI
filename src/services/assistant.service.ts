@@ -1,10 +1,15 @@
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { config } from '../config/index.js';
 import * as userRepo from '../repositories/user.repository.js';
 import * as convoRepo from '../repositories/conversation.repository.js';
 import * as streakService from './streak.service.js';
 import { UserNotFoundError, ClaudeTimeoutError } from '../utils/errors.js';
-import type { MessageContent, ConversationMessage } from '../types/index.js';
+import type {
+    MessageContent,
+    ConversationMessage,
+    SessionFile,
+    ExamQuestion,
+} from '../types/index.js';
 
 const anthropic = new Anthropic({ apiKey: config.claudeApiKey });
 
@@ -27,7 +32,16 @@ function withDeadline<T>(p: Promise<T>, msLeft: number): Promise<T> {
 const MODELS = {
     GENERAL_1: 'claude-sonnet-4-6',
     GENERAL_2: 'claude-opus-4-8',
+    PREP: 'claude-sonnet-4-6',
 } as const;
+
+// Files API beta header — required on any messages call that references an
+// uploaded file by file_id, and on the files upload/delete calls themselves.
+const FILES_BETA = 'files-api-2025-04-14';
+
+// Prep explanations can run long (the per-question teaching answer). Give the
+// prep calls a generous output budget separate from the chat path.
+const PREP_MAX_TOKENS = 8192;
 
 const systemPrompt = `You are Florence*, a highly knowledgeable teacher on every subject. You guide students through concepts with clear, concise, and direct answers.
 
@@ -52,6 +66,10 @@ When sources are available and relevant, name them (author, title, or institutio
 Use analogies occasionally to make abstract concepts concrete, but do not force them.
 Be encouraging without being verbose.
 </behavior>
+
+<single_question_rule priority="high">
+If a user sends a document or image and asks you to generate multiple questions from it (for example "make 10 questions from this") while you are NOT inside a prep session, generate exactly ONE sample question from the material, then tell them to send /prep to run a full, scored quiz built from their uploads. Never produce a batch of questions in normal chat. This protects the prep feature and points users to it.
+</single_question_rule>
 
 <answer_length>
 Scale your answer length to the question. A factual or yes/no question gets a direct one- or two-sentence answer; an "explain", "why", or "how" question gets a fuller treatment. Lead with the answer, then add only the detail that changes the student's understanding. Clarity and length are different: give the shortest answer that fully answers the question, and never pad to seem thorough.
@@ -390,4 +408,263 @@ export async function processMultiMediaMessage(
     ]);
 
     return response;
+}
+
+/* ===================== Prep ===================== */
+
+const prepSystemPrompt = `You are Florence*, running a scored quiz built strictly from the student's uploaded materials.
+
+<critical_writing_rule priority="highest">
+NEVER use an em dash. Use a comma, a colon, parentheses, or two sentences instead. A response containing an em dash is a failed response.
+</critical_writing_rule>
+
+<grounding priority="highest">
+The uploaded files are the primary source of truth. Build questions only from their content, and when explaining an answer, prioritize the file over your own general knowledge.
+Use your own knowledge to support and disambiguate, not to override the file. Only when the file's content is unclear or blatantly incorrect should you briefly flag the discrepancy. This is disambiguation, not reflexively second-guessing the file.
+Record which file (or image) each question came from so explanations can cite it. For images there is no filename, so refer to them generically (for example "one of the images you sent").
+</grounding>
+
+<explanations>
+After a student answers, explain that question clearly and student-friendly: state the correct (or all valid) answers, and explain why the student's answer was wrong, or if right, whether and how it could be improved. Keep it focused; do not pad.
+</explanations>`;
+
+// Minimal shape of the beta message response blocks we read. Avoids depending on
+// exact SDK beta type-export paths while staying type-safe at the read sites.
+interface BetaBlock {
+    type: string;
+    text?: string;
+    name?: string;
+    input?: unknown;
+}
+interface BetaMessageLike {
+    content: BetaBlock[];
+    stop_reason: string | null;
+}
+
+// Build the file-reference content blocks for a prep call. Images must be
+// referenced as image blocks, PDFs/other docs as document blocks.
+function buildFileBlocks(files: SessionFile[]): object[] {
+    return files.map((f) =>
+        f.kind === 'image'
+            ? { type: 'image', source: { type: 'file', file_id: f.anthropicFileId } }
+            : { type: 'document', source: { type: 'file', file_id: f.anthropicFileId } }
+    );
+}
+
+// One prep-tier Claude call (sonnet, high effort, files beta), deadline-guarded.
+async function prepCreate(params: Record<string, unknown>): Promise<BetaMessageLike> {
+    const deadline = Date.now() + CLAUDE_DEADLINE_MS;
+    const full = {
+        model: MODELS.PREP,
+        max_tokens: PREP_MAX_TOKENS,
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'high' },
+        betas: [FILES_BETA],
+        ...params,
+    };
+    const res = (await withDeadline(
+        anthropic.beta.messages.create(full as never) as Promise<BetaMessageLike>,
+        deadline - Date.now()
+    )) as BetaMessageLike;
+    return res;
+}
+
+function joinText(blocks: BetaBlock[]): string {
+    return blocks
+        .filter((b) => b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text as string)
+        .join('')
+        .trim();
+}
+
+// Upload a file's bytes to the Anthropic Files API once; reference by the returned
+// file_id on every later prep call instead of re-sending base64.
+export async function uploadPrepFile(
+    buffer: Buffer,
+    fileName: string,
+    mimeType: string
+): Promise<string> {
+    const uploaded = await anthropic.beta.files.upload({
+        file: await toFile(buffer, fileName, { type: mimeType }),
+        betas: [FILES_BETA],
+    });
+    return uploaded.id;
+}
+
+// Release an Anthropic-stored file (on /exit or session sweep). Best-effort.
+export async function deletePrepFile(fileId: string): Promise<void> {
+    try {
+        await anthropic.beta.files.delete(fileId, { betas: [FILES_BETA] });
+    } catch (err) {
+        console.error('Failed to delete Anthropic file', fileId, (err as Error).message);
+    }
+}
+
+const EMIT_QUESTIONS_TOOL = {
+    name: 'emit_questions',
+    description: 'Return the generated quiz questions as structured data.',
+    input_schema: {
+        type: 'object',
+        properties: {
+            questions: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        type: { type: 'string', enum: ['mcq', 'theory', 'short'] },
+                        question: { type: 'string' },
+                        options: { type: 'array', items: { type: 'string' } },
+                        answer: { type: 'string' },
+                        marks: { type: 'number' },
+                        difficulty: { type: 'string', enum: ['easy', 'medium', 'hard'] },
+                        topic: { type: 'string' },
+                        sourceLabel: { type: 'string' },
+                    },
+                    required: ['type', 'question', 'answer', 'marks', 'difficulty', 'topic', 'sourceLabel'],
+                },
+            },
+        },
+        required: ['questions'],
+    },
+};
+
+const GRADE_ANSWER_TOOL = {
+    name: 'grade_answer',
+    description: 'Grade the student answer and return a teaching explanation.',
+    input_schema: {
+        type: 'object',
+        properties: {
+            correct: { type: 'boolean' },
+            awardedMarks: { type: 'number' },
+            explanation: { type: 'string' },
+        },
+        required: ['correct', 'awardedMarks', 'explanation'],
+    },
+};
+
+// Generate `count` questions grounded in the uploaded files. Returns the parsed,
+// sanitized question list. `count` should already be balance-gated by the caller.
+export async function generateQuestions(files: SessionFile[], count: number): Promise<ExamQuestion[]> {
+    const instruction = `Generate exactly ${count} exam question${count === 1 ? '' : 's'} based strictly on the uploaded materials.
+Mix question types sensibly (mcq, theory, short) for the material. For every mcq, provide 4 plausible options and set "answer" to the full text of the correct option. For theory/short questions, set "answer" to a concise model answer.
+For each question, set "sourceLabel" to the file it came from (use the document's title/filename, or "one of the images you sent" for image sources).
+Return the questions via the emit_questions tool only.`;
+
+    const messages = [
+        {
+            role: 'user',
+            content: [...buildFileBlocks(files), { type: 'text', text: instruction }],
+        },
+    ];
+
+    const res = await prepCreate({
+        system: prepSystemPrompt,
+        tools: [EMIT_QUESTIONS_TOOL],
+        tool_choice: { type: 'tool', name: 'emit_questions' },
+        messages,
+    });
+
+    const toolBlock = res.content.find((b) => b.type === 'tool_use' && b.name === 'emit_questions');
+    const raw = (toolBlock?.input as { questions?: unknown[] } | undefined)?.questions;
+    if (!Array.isArray(raw) || raw.length === 0) {
+        throw new Error('Question generation returned no questions');
+    }
+
+    const questions: ExamQuestion[] = raw.slice(0, count).map((q) => {
+        const item = q as Partial<ExamQuestion>;
+        const type: ExamQuestion['type'] =
+            item.type === 'mcq' || item.type === 'theory' || item.type === 'short' ? item.type : 'short';
+        return {
+            type,
+            question: String(item.question ?? '').trim(),
+            options: type === 'mcq' && Array.isArray(item.options) ? item.options.map(String) : undefined,
+            answer: String(item.answer ?? '').trim(),
+            marks: typeof item.marks === 'number' && item.marks > 0 ? item.marks : 1,
+            difficulty:
+                item.difficulty === 'easy' || item.difficulty === 'medium' || item.difficulty === 'hard'
+                    ? item.difficulty
+                    : 'medium',
+            topic: String(item.topic ?? '').trim(),
+            sourceLabel: String(item.sourceLabel ?? 'your uploaded material').trim(),
+        };
+    });
+
+    return questions.filter((q) => q.question.length > 0);
+}
+
+// Per-question grade + teaching explanation for theory/short answers (one call
+// does both, file context primary). MCQs are graded locally; see explainMcq.
+export async function gradeAndExplain(
+    files: SessionFile[],
+    question: ExamQuestion,
+    userAnswer: string
+): Promise<{ correct: boolean; awardedMarks: number; explanation: string }> {
+    const instruction = `Here is a quiz question you generated from the uploaded materials:
+
+Question: ${question.question}
+This question is worth ${question.marks} mark${question.marks === 1 ? '' : 's'}.
+A model answer is: ${question.answer}
+It was drawn from: ${question.sourceLabel}
+
+The student answered:
+"""${userAnswer}"""
+
+Grade the student's answer against the file content (primary source of truth). Award between 0 and ${question.marks} marks. Then write a clear explanation that names the source, gives the correct answer, and explains why the student's answer was right or wrong (and how it could be improved). Return everything via the grade_answer tool only.`;
+
+    const messages = [
+        {
+            role: 'user',
+            content: [...buildFileBlocks(files), { type: 'text', text: instruction }],
+        },
+    ];
+
+    const res = await prepCreate({
+        system: prepSystemPrompt,
+        tools: [GRADE_ANSWER_TOOL],
+        tool_choice: { type: 'tool', name: 'grade_answer' },
+        messages,
+    });
+
+    const toolBlock = res.content.find((b) => b.type === 'tool_use' && b.name === 'grade_answer');
+    const out = toolBlock?.input as
+        | { correct?: boolean; awardedMarks?: number; explanation?: string }
+        | undefined;
+    if (!out) throw new Error('Grading returned no result');
+
+    const awardedMarks =
+        typeof out.awardedMarks === 'number' ? Math.max(0, Math.min(question.marks, out.awardedMarks)) : 0;
+    return {
+        correct: Boolean(out.correct),
+        awardedMarks,
+        explanation: String(out.explanation ?? '').trim() || 'No explanation available.',
+    };
+}
+
+// Teaching explanation for an MCQ that was graded locally. Returns prose only.
+export async function explainMcq(
+    files: SessionFile[],
+    question: ExamQuestion,
+    userAnswer: string,
+    correct: boolean
+): Promise<string> {
+    const instruction = `Here is a multiple-choice question you generated from the uploaded materials:
+
+Question: ${question.question}
+Options: ${(question.options ?? []).join(' | ')}
+Correct answer: ${question.answer}
+It was drawn from: ${question.sourceLabel}
+
+The student chose: "${userAnswer}", which was ${correct ? 'correct' : 'incorrect'}.
+
+Write a short explanation that names the source, confirms the correct answer, and explains why it is correct (and, if the student was wrong, why their choice was not). Respond with the explanation text only, no tool call.`;
+
+    const messages = [
+        {
+            role: 'user',
+            content: [...buildFileBlocks(files), { type: 'text', text: instruction }],
+        },
+    ];
+
+    const res = await prepCreate({ system: prepSystemPrompt, messages });
+    return joinText(res.content) || 'No explanation available.';
 }
