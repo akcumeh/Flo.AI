@@ -96,6 +96,7 @@ export interface ITransaction extends Document {
     gatewayResponse?: object;
     metadata?: object;
     createdAt: Date;
+    expiresAt: Date;
     hasExpired(): boolean;
 }
 
