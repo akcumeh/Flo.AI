@@ -196,9 +196,6 @@ bot.command('start', async (ctx) => {
 
         if (isNewUser) {
             await ctx.reply(welcomeMessage(user.tokens));
-            await ctx.reply(
-                'Please be aware that Florence* is currently unable to process document uploads due to an internal error. We are working to resolve this issue as soon as possible. Thank you for your patience!'
-            );
         } else {
             await ctx.reply(
                 `Hello ${ctx.from!.first_name}, what do you need help with today?\n\nYou have ${user.tokens} tokens.`
