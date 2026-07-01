@@ -14,7 +14,7 @@ async function main(): Promise<void> {
     app.use(express.json());
 
     // WhatsApp webhook (Meta) — same handler the Vercel function uses.
-    app.all('/api/wa', (req, res) => whatsappHandler(req as never, res as never));
+    app.all(/^\/api\/wa/, (req, res) => whatsappHandler(req as never, res as never));
     app.get('/health', (_req, res) => res.status(200).send('ok'));
 
     app.listen(Number(config.port), () => {

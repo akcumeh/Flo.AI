@@ -30,6 +30,15 @@ export async function updateUser(userId: string, updates: Partial<IUser>): Promi
     ) as unknown as IUser | null;
 }
 
+export async function incrementTokens(userId: string, amount: number): Promise<IUser | null> {
+    await ensureConnection();
+    return await User.findOneAndUpdate(
+        { userId },
+        { $inc: { tokens: amount } },
+        { new: true }
+    ) as unknown as IUser | null;
+}
+
 export async function countUsers(filter: Record<string, unknown> = {}): Promise<number> {
     await ensureConnection();
     return await User.countDocuments(filter);

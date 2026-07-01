@@ -37,6 +37,15 @@ export async function markSuccess(reference: string, gatewayResponse: object): P
     return tx as unknown as ITransaction;
 }
 
+export async function claimSuccess(reference: string, gatewayResponse: object): Promise<ITransaction | null> {
+    await ensureConnection();
+    return await Transaction.findOneAndUpdate(
+        { reference, status: { $ne: 'success' } },
+        { $set: { status: 'success', completedAt: new Date(), gatewayResponse } },
+        { new: true }
+    ) as unknown as ITransaction | null;
+}
+
 export async function findRecentSuccessful(since: Date): Promise<ITransaction[]> {
     await ensureConnection();
     return await Transaction.find({
