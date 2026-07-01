@@ -274,11 +274,13 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
 
         if (!user) {
             user = await userRepo.createUser({ id: userId, name: profileName, tokens: 10 });
-            await sendTemplate('main_menu_hxcc21ab7ce18151cf00d9db0ebcd3fb66', 'en', waId, [
-                user.tokens.toString(),
-            ]);
-            res.status(200).send('OK');
-            return;
+            try {
+                await sendTemplate('florence_01_welcome', 'en', waId, [
+                    user.tokens.toString(),
+                ]);
+            } catch (templateError) {
+                console.error('Welcome template failed:', templateError);
+            }
         }
 
         // Prep session routing takes precedence over payment/media/chat paths.
@@ -428,14 +430,8 @@ async function processWaPayment(
     if (result.success && result.reference) {
         state.reference = result.reference;
         await state.save();
-        try {
-            await sendTemplate('ccc_verify_hx53cdb954c4d2b7cfe550c771939b4ee8', 'en', waId, [result.reference]);
-            await new Promise((r) => setTimeout(r, 500));
-        } catch (templateError) {
-            console.error('Template error:', templateError);
-        }
         await sendMsg(
-            `Complete your payment of ₦${amount.toLocaleString()} for ${tokens} tokens:\n${result.authorizationUrl}\n\nTokens are only added after you verify. Once you've paid, tap to copy:\n/verify ${result.reference}\n\nPaste it here to confirm and receive your tokens.`,
+            `Complete your payment of ₦${amount.toLocaleString()} for ${tokens} tokens:\n${result.authorizationUrl}\n\nYour tokens will be added automatically once your payment is confirmed.`,
             waId
         );
     } else {
@@ -559,11 +555,8 @@ async function handleWaCommand(
         }
 
         case '/help': {
-            await sendTemplate('main_menu_hxcc21ab7ce18151cf00d9db0ebcd3fb66', 'en', waId, [
-                user!.tokens.toString(),
-            ]);
             await sendMsg(
-                `Here are the available commands:\n\n/start - Start a NEW conversation\n/about - Learn about Florence*\n/tokens - Check your token balance\n/payments - Buy more tokens\n/streak - Check your daily streak\n/transactions - View payment history\n/conversations - View recent conversations\n/prep - Generate a scored quiz from your own materials\n/exit - Leave prep mode\n/verify [ref] - Verify a payment\n/help - Show this message`,
+                `Here are the commands you can use:\n\n/start - Start a NEW conversation thread\n/about - Learn more about Florence*\n/tokens - See how many tokens you have left\n/payments - Top up your tokens\n/conversations - View and continue previous conversations\n/transactions - View your transaction history\n/streak - Check your daily streak\n/prep - Generate a scored quiz from your own materials\n/exit - Leave prep mode\n/verify - Verify your payment status\n/help - Get a list of all commands [YOU ARE HERE]`,
                 waId
             );
             res.status(200).send('OK');
@@ -573,6 +566,12 @@ async function handleWaCommand(
         default: {
             if (body.startsWith('/verify')) {
                 await handleWaVerify(body, userId, user!, waId);
+                res.status(200).send('OK');
+                return;
+            }
+
+            if (body.startsWith('/')) {
+                await sendMsg('Unknown command. Send /help to see everything I can do.', waId);
                 res.status(200).send('OK');
                 return;
             }
@@ -659,6 +658,60 @@ async function handleWaVerify(
         await sendMsg(`Bank Transfer\n\n${result.message}`, waId);
     } else {
         await sendMsg(`Verification Failed\n\n${result.message}`, waId);
+    }
+}
+
+/* === Paystack Webhook === */
+
+async function handlePaystackWebhook(req: VercelRequest, res: VercelResponse): Promise<void> {
+    const signature = (req.headers['x-paystack-signature'] as string) || '';
+    if (!signature || !paystackService.verifyWebhookSignature(req.body as object, signature)) {
+        console.error('Paystack webhook: invalid signature');
+        res.status(401).send('Invalid signature');
+        return;
+    }
+
+    const payload = req.body as { event?: string; data?: { reference?: string } };
+    if (payload.event !== 'charge.success' || !payload.data?.reference) {
+        res.status(200).send('OK');
+        return;
+    }
+
+    const reference = payload.data.reference;
+
+    try {
+        const tx = await transactionRepo.findByReference(reference);
+        if (!tx) {
+            res.status(200).send('OK');
+            return;
+        }
+
+        const claimed = await transactionRepo.claimSuccess(reference, payload.data as object);
+        if (!claimed) {
+            res.status(200).send('OK');
+            return;
+        }
+
+        await userRepo.incrementTokens(tx.userId, tx.tokens);
+        await VerificationState.updateOne(
+            { userId: tx.userId, reference },
+            { $setOnInsert: { status: 'verified', tokens: tx.tokens, verifiedAt: new Date() } },
+            { upsert: true }
+        );
+        await PaymentState.deleteOne({ userId: tx.userId });
+
+        if (tx.userId.startsWith('wa:')) {
+            const updated = await userRepo.findUser(tx.userId);
+            await sendMsg(
+                `Payment confirmed! ${tx.tokens} tokens added. You now have ${updated?.tokens ?? tx.tokens} tokens.`,
+                tx.userId
+            );
+        }
+
+        res.status(200).send('OK');
+    } catch (error) {
+        console.error('Paystack webhook processing error:', error);
+        res.status(500).send('Error');
     }
 }
 
@@ -888,6 +941,11 @@ export async function handler(req: VercelRequest, res: VercelResponse): Promise<
 
         if (path === '/payment/callback' || path.startsWith('/payment/callback?')) {
             paymentCallbackPage(req, res);
+            return;
+        }
+
+        if (path === '/paystack/webhook' || path.startsWith('/paystack/webhook?')) {
+            await handlePaystackWebhook(req, res);
             return;
         }
 
