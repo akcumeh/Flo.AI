@@ -9,11 +9,13 @@ export interface PlatformUser {
 }
 
 export interface MessageContent {
-    type: 'text' | 'photo' | 'document';
+    type: 'text' | 'photo' | 'document' | 'file_ref';
     text?: string;
     fileId?: string;
     mimeType?: string;
     caption?: string;
+    anthropicFileId?: string;
+    kind?: 'image' | 'document';
 }
 
 export interface ConversationMessage {

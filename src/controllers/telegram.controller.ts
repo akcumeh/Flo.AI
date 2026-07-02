@@ -4,6 +4,7 @@ import { config } from '../config/index.js';
 import * as userRepo from '../repositories/user.repository.js';
 import * as transactionRepo from '../repositories/transaction.repository.js';
 import * as convoRepo from '../repositories/conversation.repository.js';
+import * as fileRepo from '../repositories/file.repository.js';
 import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
 import * as streakService from '../services/streak.service.js';
@@ -119,16 +120,23 @@ function splitMessage(text: string, maxLength = 4096): string[] {
     return chunks.filter((c) => c.trim().length > 0);
 }
 
+// Telegram's legacy Markdown parser reads the brand's trailing asterisk as an
+// unpaired bold marker: it either throws (dumping the whole reply to plain
+// text) or silently pairs with the next *bold* span and corrupts it. Swapping
+// in the lookalike U+2217 keeps the star visible AND keeps bold rendering.
+function protectBrandStar(text: string): string {
+    return text.replace(/(?<!\*)Florence\*(?!\*)/g, 'Florence∗');
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function sendLongMessage(ctx: any, text: string, options: object = {}): Promise<unknown> {
-    const chunks = splitMessage(text);
+    const chunks = splitMessage(protectBrandStar(text));
 
     if (chunks.length === 1) {
         try {
             return await ctx.reply(chunks[0], { ...options, parse_mode: 'Markdown' });
         } catch (err) {
-            // Fall back to plain text so the user gets the answer unformatted.
-            console.error('Markdown parse failed, retrying as plain text:', (err as Error).message);
+            console.error('Markdown parse failed, falling back to plain text:', (err as Error).message);
             return ctx.reply(chunks[0], options);
         }
     }
@@ -144,7 +152,7 @@ async function sendLongMessage(ctx: any, text: string, options: object = {}): Pr
         try {
             sent = await ctx.reply(messageText, { ...options, parse_mode: 'Markdown' });
         } catch (err) {
-            console.error('Markdown parse failed on chunk, retrying as plain text:', (err as Error).message);
+            console.error('Markdown parse failed on chunk, falling back to plain text:', (err as Error).message);
             sent = await ctx.reply(messageText, options);
         }
         messages.push(sent);
@@ -685,12 +693,21 @@ bot.on(message('photo'), async (ctx) => {
         await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
 
         const imgBuffer = await downloadTelegramFile(bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } }, fileId);
-        const b64img = Buffer.from(imgBuffer).toString('base64');
 
         const currentRequest = await RequestState.findById(requestState._id);
         if (!currentRequest || (currentRequest as unknown as { status: string }).status !== 'processing') return;
 
-        const response = await assistantService.processMediaMessage(userId, b64img, 'image/jpeg', caption);
+        const anthropicFileId = await assistantService.uploadChatFile(
+            Buffer.from(imgBuffer),
+            `image-${Date.now()}.jpg`,
+            'image/jpeg'
+        );
+        fileRepo.trackFile(userId, anthropicFileId);
+        const response = await assistantService.processMediaMessage(
+            userId,
+            { type: 'file', anthropicFileId, mimeType: 'image/jpeg' },
+            caption
+        );
 
         // Atomically claim processing -> completed. If a cancel won the race it
         // already flipped + refunded, so we must not send a (now free) answer.
@@ -800,12 +817,17 @@ bot.on(message('document'), async (ctx) => {
         await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
 
         const fileBuffer = await downloadTelegramFile(bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } }, fileId);
-        const b64File = fileBuffer.toString('base64');
 
         const currentRequest = await RequestState.findById(requestState._id);
         if (!currentRequest || (currentRequest as unknown as { status: string }).status !== 'processing') return;
 
-        const response = await assistantService.processMediaMessage(userId, b64File, mimeType, caption);
+        const anthropicFileId = await assistantService.uploadChatFile(Buffer.from(fileBuffer), fileName, mimeType);
+        fileRepo.trackFile(userId, anthropicFileId);
+        const response = await assistantService.processMediaMessage(
+            userId,
+            { type: 'file', anthropicFileId, mimeType },
+            caption
+        );
 
         // Atomically claim processing -> completed. If a cancel won the race it
         // already flipped + refunded, so we must not send a (now free) answer.
@@ -1268,7 +1290,12 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
             } catch {
                 // ignore
             }
-            await bot.telegram.sendMessage(telegramId, claudeAnswer, { parse_mode: 'Markdown' });
+            const safeAnswer = protectBrandStar(claudeAnswer);
+            try {
+                await bot.telegram.sendMessage(telegramId, safeAnswer, { parse_mode: 'Markdown' });
+            } catch {
+                await bot.telegram.sendMessage(telegramId, safeAnswer);
+            }
         } catch (error) {
             console.error('Error processing media group:', error);
 

@@ -39,6 +39,10 @@ const MODELS = {
 // uploaded file by file_id, and on the files upload/delete calls themselves.
 const FILES_BETA = 'files-api-2025-04-14';
 
+// 1-hour cache TTL: writes cost 2x (vs 1.25x for the 5-min default) but survive
+// the sparse-traffic gaps between student messages and across a whole prep quiz.
+const CACHE_1H = { type: 'ephemeral', ttl: '1h' } as const;
+
 // Prep explanations can run long (the per-question teaching answer). Give the
 // prep calls a generous output budget separate from the chat path.
 const PREP_MAX_TOKENS = 8192;
@@ -217,6 +221,11 @@ function buildClaudeMessages(history: ConversationMessage[], newMessage: string 
         if (msg.role === 'user') {
             if (Array.isArray(msg.content)) {
                 const richContent = (msg.content as MessageContent[]).map((item) => {
+                    if (item.type === 'file_ref' && item.anthropicFileId) {
+                        return item.kind === 'image'
+                            ? { type: 'image', source: { type: 'file', file_id: item.anthropicFileId } }
+                            : { type: 'document', source: { type: 'file', file_id: item.anthropicFileId } };
+                    }
                     if (item.type === 'text') {
                         return {
                             type: 'text',
@@ -233,7 +242,8 @@ function buildClaudeMessages(history: ConversationMessage[], newMessage: string 
                 });
             }
         } else {
-            messages.push({ role: 'assistant', content: `[Florence*]\n\n${msg.content}` });
+            const content = typeof msg.content === 'string' ? msg.content : '';
+            messages.push({ role: 'assistant', content });
         }
     }
 
@@ -258,16 +268,35 @@ function buildClaudeMessages(history: ConversationMessage[], newMessage: string 
     return messages;
 }
 
+// Multi-turn cache breakpoint: marking the last content block of the newest turn
+// lets the next request read the entire prior conversation (tools + system +
+// history) from cache instead of re-billing it at full input price.
+function tagCacheBreakpoint(messages: ClaudeMessage[]): ClaudeMessage[] {
+    const last = messages[messages.length - 1];
+    if (!last) return messages;
+    if (typeof last.content === 'string') {
+        last.content = [{ type: 'text', text: last.content, cache_control: CACHE_1H }];
+    } else if (last.content.length > 0) {
+        (last.content[last.content.length - 1] as Record<string, unknown>)['cache_control'] = CACHE_1H;
+    }
+    return messages;
+}
+
 async function callClaude(messages: ClaudeMessage[], withAttachment = false): Promise<string> {
-    // Server tool version strings and the adaptive thinking / output_config params
-    // may lead the SDK's published types; cast the params object only. The response
-    // is fully typed (Anthropic.Message) so block extraction stays type-safe.
+    tagCacheBreakpoint(messages);
+    // Chat history may reference Anthropic-stored files (file_ref -> file source
+    // blocks), which only resolve on the beta endpoint with the Files API header.
+    // Server tool version strings and adaptive thinking / output_config may lead
+    // the SDK's published types; cast at the call site (same idiom as prepCreate)
+    // and pin the response back to Anthropic.Message so block extraction stays
+    // type-safe.
     const params = {
         model: MODELS.GENERAL_1,
         max_tokens: 16384,
         thinking: { type: 'adaptive' },
         output_config: { effort: withAttachment ? 'medium' : 'low' },
-        system: systemPrompt,
+        betas: [FILES_BETA],
+        system: [{ type: 'text', text: systemPrompt, cache_control: CACHE_1H }],
         tools: [
             // max_uses caps server-side tool spirals: without it the model can run
             // five searches when one would do, blowing the latency budget.
@@ -275,22 +304,25 @@ async function callClaude(messages: ClaudeMessage[], withAttachment = false): Pr
             { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 2 },
         ],
         messages,
-    } as unknown as Anthropic.MessageCreateParamsNonStreaming;
+    };
 
     const deadline = Date.now() + CLAUDE_DEADLINE_MS;
-    let response = await withDeadline(anthropic.messages.create(params), deadline - Date.now());
+    let response = (await withDeadline(
+        anthropic.beta.messages.create(params as never) as unknown as Promise<Anthropic.Message>,
+        deadline - Date.now()
+    )) as Anthropic.Message;
 
     // Web search/fetch run server-side and can pause the turn; resume until done.
     let continuations = 0;
     while (response.stop_reason === 'pause_turn' && continuations < 2) {
         continuations++;
-        response = await withDeadline(
-            anthropic.messages.create({
+        response = (await withDeadline(
+            anthropic.beta.messages.create({
                 ...params,
-                messages: [...messages, { role: 'assistant', content: response.content }] as ClaudeMessage[] as Anthropic.MessageParam[],
-            }),
+                messages: [...messages, { role: 'assistant', content: response.content }],
+            } as never) as unknown as Promise<Anthropic.Message>,
             deadline - Date.now()
-        );
+        )) as Anthropic.Message;
     }
 
     // With web tools the response interleaves server_tool_use / result blocks with
@@ -338,10 +370,27 @@ export async function processTextMessage(userId: string, text: string): Promise<
     return response;
 }
 
+// Upload chat media to the Anthropic Files API once; later turns reference the
+// returned file_id instead of re-sending base64 in every request.
+export async function uploadChatFile(
+    buffer: Buffer,
+    fileName: string,
+    mimeType: string
+): Promise<string> {
+    const uploaded = await anthropic.beta.files.upload({
+        file: await toFile(buffer, fileName, { type: mimeType }),
+        betas: [FILES_BETA],
+    });
+    return uploaded.id;
+}
+
+export type MediaSource =
+    | { type: 'base64'; data: string; mimeType: string }
+    | { type: 'file'; anthropicFileId: string; mimeType: string };
+
 export async function processMediaMessage(
     userId: string,
-    b64Data: string,
-    mimeType: string,
+    source: MediaSource,
     caption: string
 ): Promise<string> {
     const user = await userRepo.findUser(userId);
@@ -350,12 +399,11 @@ export async function processMediaMessage(
     await streakService.updateStreak(userId);
 
     // No token logic here (see processTextMessage). Controllers own charge/refund.
-    const mediaType = mimeType.startsWith('image/') ? 'image' : 'document';
+    const kind: 'image' | 'document' = source.mimeType.startsWith('image/') ? 'image' : 'document';
     const attachmentContent = [
-        {
-            type: mediaType,
-            source: { type: 'base64', media_type: mimeType, data: b64Data },
-        },
+        source.type === 'file'
+            ? { type: kind, source: { type: 'file', file_id: source.anthropicFileId } }
+            : { type: kind, source: { type: 'base64', media_type: source.mimeType, data: source.data } },
         { type: 'text', text: caption },
     ];
 
@@ -366,13 +414,19 @@ export async function processMediaMessage(
     await convoRepo.appendMessages(userId, [
         {
             role: 'user',
-            content: [
-                { type: 'text', text: caption },
-                {
-                    type: mediaType as 'photo' | 'document',
-                    source: { type: 'base64', media_type: mimeType, data: b64Data },
-                } as unknown as MessageContent,
-            ],
+            content:
+                source.type === 'file'
+                    ? [
+                          { type: 'text', text: caption },
+                          { type: 'file_ref', anthropicFileId: source.anthropicFileId, kind },
+                      ]
+                    : [
+                          { type: 'text', text: caption },
+                          {
+                              type: kind as 'photo' | 'document',
+                              source: { type: 'base64', media_type: source.mimeType, data: source.data },
+                          } as unknown as MessageContent,
+                      ],
         },
         { role: 'assistant', content: response },
     ]);
@@ -443,24 +497,35 @@ interface BetaMessageLike {
 
 // Build the file-reference content blocks for a prep call. Images must be
 // referenced as image blocks, PDFs/other docs as document blocks.
+// The last block carries the cache breakpoint: prepSystemPrompt alone is under
+// Sonnet's 2048-token cache minimum, so caching through the file blocks is what
+// actually lets the generate + per-question calls share a prefix.
 function buildFileBlocks(files: SessionFile[]): object[] {
-    return files.map((f) =>
+    const blocks: Record<string, unknown>[] = files.map((f) =>
         f.kind === 'image'
             ? { type: 'image', source: { type: 'file', file_id: f.anthropicFileId } }
             : { type: 'document', source: { type: 'file', file_id: f.anthropicFileId } }
     );
+    const last = blocks[blocks.length - 1];
+    if (last) last['cache_control'] = CACHE_1H;
+    return blocks;
 }
 
 // One prep-tier Claude call (sonnet, high effort, files beta), deadline-guarded.
 async function prepCreate(params: Record<string, unknown>): Promise<BetaMessageLike> {
     const deadline = Date.now() + CLAUDE_DEADLINE_MS;
+    const { system, ...rest } = params;
     const full = {
         model: MODELS.PREP,
         max_tokens: PREP_MAX_TOKENS,
         thinking: { type: 'adaptive' },
         output_config: { effort: 'high' },
         betas: [FILES_BETA],
-        ...params,
+        system:
+            typeof system === 'string'
+                ? [{ type: 'text', text: system, cache_control: CACHE_1H }]
+                : system,
+        ...rest,
     };
     const res = (await withDeadline(
         anthropic.beta.messages.create(full as never) as Promise<BetaMessageLike>,
