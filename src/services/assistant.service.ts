@@ -39,6 +39,10 @@ const MODELS = {
 // uploaded file by file_id, and on the files upload/delete calls themselves.
 const FILES_BETA = 'files-api-2025-04-14';
 
+// 1-hour cache TTL: writes cost 2x (vs 1.25x for the 5-min default) but survive
+// the sparse-traffic gaps between student messages and across a whole prep quiz.
+const CACHE_1H = { type: 'ephemeral', ttl: '1h' } as const;
+
 // Prep explanations can run long (the per-question teaching answer). Give the
 // prep calls a generous output budget separate from the chat path.
 const PREP_MAX_TOKENS = 8192;
@@ -258,7 +262,22 @@ function buildClaudeMessages(history: ConversationMessage[], newMessage: string 
     return messages;
 }
 
+// Multi-turn cache breakpoint: marking the last content block of the newest turn
+// lets the next request read the entire prior conversation (tools + system +
+// history) from cache instead of re-billing it at full input price.
+function tagCacheBreakpoint(messages: ClaudeMessage[]): ClaudeMessage[] {
+    const last = messages[messages.length - 1];
+    if (!last) return messages;
+    if (typeof last.content === 'string') {
+        last.content = [{ type: 'text', text: last.content, cache_control: CACHE_1H }];
+    } else if (last.content.length > 0) {
+        (last.content[last.content.length - 1] as Record<string, unknown>)['cache_control'] = CACHE_1H;
+    }
+    return messages;
+}
+
 async function callClaude(messages: ClaudeMessage[], withAttachment = false): Promise<string> {
+    tagCacheBreakpoint(messages);
     // Server tool version strings and the adaptive thinking / output_config params
     // may lead the SDK's published types; cast the params object only. The response
     // is fully typed (Anthropic.Message) so block extraction stays type-safe.
@@ -267,7 +286,7 @@ async function callClaude(messages: ClaudeMessage[], withAttachment = false): Pr
         max_tokens: 16384,
         thinking: { type: 'adaptive' },
         output_config: { effort: withAttachment ? 'medium' : 'low' },
-        system: systemPrompt,
+        system: [{ type: 'text', text: systemPrompt, cache_control: CACHE_1H }],
         tools: [
             // max_uses caps server-side tool spirals: without it the model can run
             // five searches when one would do, blowing the latency budget.
@@ -443,24 +462,35 @@ interface BetaMessageLike {
 
 // Build the file-reference content blocks for a prep call. Images must be
 // referenced as image blocks, PDFs/other docs as document blocks.
+// The last block carries the cache breakpoint: prepSystemPrompt alone is under
+// Sonnet's 2048-token cache minimum, so caching through the file blocks is what
+// actually lets the generate + per-question calls share a prefix.
 function buildFileBlocks(files: SessionFile[]): object[] {
-    return files.map((f) =>
+    const blocks: Record<string, unknown>[] = files.map((f) =>
         f.kind === 'image'
             ? { type: 'image', source: { type: 'file', file_id: f.anthropicFileId } }
             : { type: 'document', source: { type: 'file', file_id: f.anthropicFileId } }
     );
+    const last = blocks[blocks.length - 1];
+    if (last) last['cache_control'] = CACHE_1H;
+    return blocks;
 }
 
 // One prep-tier Claude call (sonnet, high effort, files beta), deadline-guarded.
 async function prepCreate(params: Record<string, unknown>): Promise<BetaMessageLike> {
     const deadline = Date.now() + CLAUDE_DEADLINE_MS;
+    const { system, ...rest } = params;
     const full = {
         model: MODELS.PREP,
         max_tokens: PREP_MAX_TOKENS,
         thinking: { type: 'adaptive' },
         output_config: { effort: 'high' },
         betas: [FILES_BETA],
-        ...params,
+        system:
+            typeof system === 'string'
+                ? [{ type: 'text', text: system, cache_control: CACHE_1H }]
+                : system,
+        ...rest,
     };
     const res = (await withDeadline(
         anthropic.beta.messages.create(full as never) as Promise<BetaMessageLike>,
