@@ -6,10 +6,7 @@
     "scripts": {
         "dev": "tsx watch src/index.ts",
         "build": "tsc",
-        "start": "node dist/index.js",
-        "test": "node test_suite/runTests.js",
-        "test:setup": "TEST_MODE=true node test_suite/setupTest.js",
-        "test:cleanup": "TEST_MODE=true node test_suite/cleanupTest.js"
+        "start": "node dist/index.js"
     },
     "type": "module",
     "keywords": [],

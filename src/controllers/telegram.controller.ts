@@ -432,21 +432,21 @@ bot.command('feedback', async (ctx) => {
 
 bot.command('help', async (ctx) => {
     await ctx.reply(
-        `Here are some commands you can use:\n\n \
+        `Here are the commands you can use:\n\n \
 /start - Start a NEW conversation thread\n \
 /about - Learn more about Florence*\n \
-/tokens - see how many tokens you have left\n \
+/tokens - See how many tokens you have left\n \
 /payments - Top up your tokens\n \
 /conversations - View and continue previous conversations\n\
 /transactions - View your transaction history\n\
 /prep - Generate a scored quiz from your own materials\n\
 /exit - Leave prep mode\n\
-/stem - Answer math & science questions even better [coming soon]\n \
+
 /research - Get help with your research/thesis/project [coming soon]\n \
 /feedback - Send feedback to the developers\n \
 /verify - Verify your payment status\n \
 /cancel - Cancel an ongoing request\n\
-/help - Get a list of all commands`
+/help - Get a list of all commands [YOU ARE HERE]`
     );
 });
 
