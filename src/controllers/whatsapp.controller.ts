@@ -391,8 +391,7 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
                 try {
                     const response = await assistantService.processMediaMessage(
                         userId,
-                        b64Media,
-                        mediaType,
+                        { type: 'base64', data: b64Media, mimeType: mediaType },
                         caption
                     );
                     await sendMsg(response, waId);

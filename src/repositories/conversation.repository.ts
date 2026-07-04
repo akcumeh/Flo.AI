@@ -1,5 +1,7 @@
 import { User } from '../../models/user.js';
 import { ensureConnection } from '../../db/connection.js';
+import * as fileRepo from './file.repository.js';
+import { deletePrepFile } from '../services/assistant.service.js';
 import type { ConversationMessage, SavedConversation } from '../types/index.js';
 
 export async function getHistory(userId: string): Promise<ConversationMessage[]> {
@@ -18,6 +20,10 @@ export async function appendMessages(userId: string, messages: ConversationMessa
 
 export async function resetHistory(userId: string, saveAs?: string): Promise<void> {
     await ensureConnection();
+
+    // Release Anthropic-stored chat files on every reset path (saveAs and plain).
+    const filesToDelete = fileRepo.clearTrackedFiles(userId);
+    await Promise.allSettled(filesToDelete.map((id) => deletePrepFile(id)));
 
     if (saveAs !== undefined) {
         const user = await User.findOne({ userId }, 'convoHistory convos');

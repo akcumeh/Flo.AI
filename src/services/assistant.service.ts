@@ -221,6 +221,11 @@ function buildClaudeMessages(history: ConversationMessage[], newMessage: string 
         if (msg.role === 'user') {
             if (Array.isArray(msg.content)) {
                 const richContent = (msg.content as MessageContent[]).map((item) => {
+                    if (item.type === 'file_ref' && item.anthropicFileId) {
+                        return item.kind === 'image'
+                            ? { type: 'image', source: { type: 'file', file_id: item.anthropicFileId } }
+                            : { type: 'document', source: { type: 'file', file_id: item.anthropicFileId } };
+                    }
                     if (item.type === 'text') {
                         return {
                             type: 'text',
@@ -237,7 +242,8 @@ function buildClaudeMessages(history: ConversationMessage[], newMessage: string 
                 });
             }
         } else {
-            messages.push({ role: 'assistant', content: `[Florence*]\n\n${msg.content}` });
+            const content = typeof msg.content === 'string' ? msg.content : '';
+            messages.push({ role: 'assistant', content });
         }
     }
 
@@ -278,14 +284,18 @@ function tagCacheBreakpoint(messages: ClaudeMessage[]): ClaudeMessage[] {
 
 async function callClaude(messages: ClaudeMessage[], withAttachment = false): Promise<string> {
     tagCacheBreakpoint(messages);
-    // Server tool version strings and the adaptive thinking / output_config params
-    // may lead the SDK's published types; cast the params object only. The response
-    // is fully typed (Anthropic.Message) so block extraction stays type-safe.
+    // Chat history may reference Anthropic-stored files (file_ref -> file source
+    // blocks), which only resolve on the beta endpoint with the Files API header.
+    // Server tool version strings and adaptive thinking / output_config may lead
+    // the SDK's published types; cast at the call site (same idiom as prepCreate)
+    // and pin the response back to Anthropic.Message so block extraction stays
+    // type-safe.
     const params = {
         model: MODELS.GENERAL_1,
         max_tokens: 16384,
         thinking: { type: 'adaptive' },
         output_config: { effort: withAttachment ? 'medium' : 'low' },
+        betas: [FILES_BETA],
         system: [{ type: 'text', text: systemPrompt, cache_control: CACHE_1H }],
         tools: [
             // max_uses caps server-side tool spirals: without it the model can run
@@ -294,22 +304,25 @@ async function callClaude(messages: ClaudeMessage[], withAttachment = false): Pr
             { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 2 },
         ],
         messages,
-    } as unknown as Anthropic.MessageCreateParamsNonStreaming;
+    };
 
     const deadline = Date.now() + CLAUDE_DEADLINE_MS;
-    let response = await withDeadline(anthropic.messages.create(params), deadline - Date.now());
+    let response = (await withDeadline(
+        anthropic.beta.messages.create(params as never) as unknown as Promise<Anthropic.Message>,
+        deadline - Date.now()
+    )) as Anthropic.Message;
 
     // Web search/fetch run server-side and can pause the turn; resume until done.
     let continuations = 0;
     while (response.stop_reason === 'pause_turn' && continuations < 2) {
         continuations++;
-        response = await withDeadline(
-            anthropic.messages.create({
+        response = (await withDeadline(
+            anthropic.beta.messages.create({
                 ...params,
-                messages: [...messages, { role: 'assistant', content: response.content }] as ClaudeMessage[] as Anthropic.MessageParam[],
-            }),
+                messages: [...messages, { role: 'assistant', content: response.content }],
+            } as never) as unknown as Promise<Anthropic.Message>,
             deadline - Date.now()
-        );
+        )) as Anthropic.Message;
     }
 
     // With web tools the response interleaves server_tool_use / result blocks with
@@ -357,10 +370,27 @@ export async function processTextMessage(userId: string, text: string): Promise<
     return response;
 }
 
+// Upload chat media to the Anthropic Files API once; later turns reference the
+// returned file_id instead of re-sending base64 in every request.
+export async function uploadChatFile(
+    buffer: Buffer,
+    fileName: string,
+    mimeType: string
+): Promise<string> {
+    const uploaded = await anthropic.beta.files.upload({
+        file: await toFile(buffer, fileName, { type: mimeType }),
+        betas: [FILES_BETA],
+    });
+    return uploaded.id;
+}
+
+export type MediaSource =
+    | { type: 'base64'; data: string; mimeType: string }
+    | { type: 'file'; anthropicFileId: string; mimeType: string };
+
 export async function processMediaMessage(
     userId: string,
-    b64Data: string,
-    mimeType: string,
+    source: MediaSource,
     caption: string
 ): Promise<string> {
     const user = await userRepo.findUser(userId);
@@ -369,12 +399,11 @@ export async function processMediaMessage(
     await streakService.updateStreak(userId);
 
     // No token logic here (see processTextMessage). Controllers own charge/refund.
-    const mediaType = mimeType.startsWith('image/') ? 'image' : 'document';
+    const kind: 'image' | 'document' = source.mimeType.startsWith('image/') ? 'image' : 'document';
     const attachmentContent = [
-        {
-            type: mediaType,
-            source: { type: 'base64', media_type: mimeType, data: b64Data },
-        },
+        source.type === 'file'
+            ? { type: kind, source: { type: 'file', file_id: source.anthropicFileId } }
+            : { type: kind, source: { type: 'base64', media_type: source.mimeType, data: source.data } },
         { type: 'text', text: caption },
     ];
 
@@ -385,13 +414,19 @@ export async function processMediaMessage(
     await convoRepo.appendMessages(userId, [
         {
             role: 'user',
-            content: [
-                { type: 'text', text: caption },
-                {
-                    type: mediaType as 'photo' | 'document',
-                    source: { type: 'base64', media_type: mimeType, data: b64Data },
-                } as unknown as MessageContent,
-            ],
+            content:
+                source.type === 'file'
+                    ? [
+                          { type: 'text', text: caption },
+                          { type: 'file_ref', anthropicFileId: source.anthropicFileId, kind },
+                      ]
+                    : [
+                          { type: 'text', text: caption },
+                          {
+                              type: kind as 'photo' | 'document',
+                              source: { type: 'base64', media_type: source.mimeType, data: source.data },
+                          } as unknown as MessageContent,
+                      ],
         },
         { role: 'assistant', content: response },
     ]);
