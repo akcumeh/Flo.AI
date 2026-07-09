@@ -184,7 +184,7 @@ export interface SessionFile {
 export interface ISession extends Document {
     userId: string;
     platform: 'tg' | 'wa';
-    mode: 'prep'; // extensible: grader, research
+    mode: 'prep' | 'create'; // extensible: grader, research
     status: 'collecting' | 'choosing' | 'quizzing' | 'completed';
     fileIds: SessionFile[];
     requestedCount: number;

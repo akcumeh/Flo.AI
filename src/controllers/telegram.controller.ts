@@ -9,6 +9,7 @@ import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
 import * as streakService from '../services/streak.service.js';
 import * as prepService from '../services/prep.service.js';
+import * as documentService from '../services/document.service.js';
 import { sendAnalytics } from '../services/analytics.service.js';
 import { ClaudeTimeoutError } from '../utils/errors.js';
 import { RequestState } from '../../models/requestState.js';
@@ -160,6 +161,11 @@ async function sendLongMessage(ctx: any, text: string, options: object = {}): Pr
         if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 100));
     }
     return messages;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function sendDocumentTg(ctx: any, file: documentService.GeneratedFile): Promise<void> {
+    await ctx.replyWithDocument({ source: file.buffer, filename: file.filename });
 }
 
 /* === Inline Query === */
@@ -408,6 +414,37 @@ bot.command('prep', async (ctx) => {
     }
 });
 
+bot.command('create', async (ctx) => {
+    try {
+        const userId = PREFIX + ctx.from!.id;
+        await ensureConnection();
+
+        const active = await prepService.getActiveSession(userId);
+        if (active) {
+            await ctx.reply('You already have a session running. Send /exit to end it first.');
+            return;
+        }
+
+        const user = await userRepo.findUser(userId);
+        if (!user) {
+            await ctx.reply('You need to start the bot first. Please send /start.');
+            return;
+        }
+        if (user.tokens < 2) {
+            await ctx.reply('You need at least 2 tokens to use create mode. Send /payments to top up.');
+            return;
+        }
+
+        await prepService.start(userId, 'tg', 'create');
+        await ctx.reply(
+            'You are in create mode. Describe the file you want: docx, pdf, md, pptx, or xlsx. Each request costs 2 tokens. Send /exit to leave.'
+        );
+    } catch (error) {
+        console.error('Error in /create command:', error);
+        await ctx.reply('Sorry, something went wrong starting create mode. Please try again.');
+    }
+});
+
 bot.command('exit', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
@@ -415,7 +452,13 @@ bot.command('exit', async (ctx) => {
 
         const session = await prepService.getActiveSession(userId);
         if (!session) {
-            await ctx.reply("You're not in a prep session right now.");
+            await ctx.reply("You're not in a session right now.");
+            return;
+        }
+
+        if (session.mode === 'create') {
+            await prepService.exit(session);
+            await ctx.reply("Create mode ended. You're back to normal chat!");
             return;
         }
 
@@ -464,7 +507,8 @@ bot.command('help', async (ctx) => {
 /conversations - View and continue previous conversations\n\
 /transactions - View your transaction history\n\
 /prep - Generate a scored quiz from your own materials\n\
-/exit - Leave prep mode\n\
+/create - Generate a downloadable file (docx, pdf, md, pptx, xlsx)\n\
+/exit - Leave prep or create mode\n\
 
 /research - Get help with your research/thesis/project [coming soon]\n \
 /feedback - Send feedback to the developers\n \
@@ -909,10 +953,14 @@ bot.on('message', async (ctx) => {
         const existingRequest = await RequestState.findOne({ userId, messageId });
         if (existingRequest) return;
 
-        // Active prep session intercepts all plain text (counts, answers).
+        // An active session intercepts all plain text (prep counts/answers, create prompts).
         const session = await prepService.getActiveSession(userId);
         if (session) {
-            await handlePrepText(ctx, session, msg.text ?? '');
+            if (session.mode === 'create') {
+                await handleCreateText(ctx, userId, session, msg.text ?? '');
+            } else {
+                await handlePrepText(ctx, session, msg.text ?? '');
+            }
             return;
         }
 
@@ -1424,6 +1472,13 @@ async function maybeHandlePrepUpload(
     const startsPrep = /^\/prep\b/i.test(caption.trim());
     if (!session && !startsPrep) return false;
 
+    if (session && session.mode === 'create') {
+        await ctx.reply(
+            'You are in create mode, which works from text prompts only. Describe the file you want, or send /exit to leave.'
+        );
+        return true;
+    }
+
     if (!session) {
         const user = await userRepo.findUser(userId);
         if (!user) {
@@ -1488,6 +1543,61 @@ async function maybeHandlePrepUpload(
         await ctx.reply('Sorry, I could not add that file. Please try again.');
     }
     return true;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleCreateText(ctx: any, userId: string, session: ISession, text: string): Promise<void> {
+    if (!text.trim()) {
+        await ctx.reply('Describe the file you want me to create, or send /exit to leave create mode.');
+        return;
+    }
+
+    const user = await userRepo.findUser(userId);
+    if (!user) {
+        await ctx.reply('You need to start the bot first. Please send /start.');
+        return;
+    }
+    if (user.tokens < 2) {
+        await ctx.reply('You need 2 tokens per file. Send /payments to top up.');
+        return;
+    }
+
+    const thinkingMsg = await ctx.reply('Creating your file...');
+    await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
+
+    let file: documentService.GeneratedFile;
+    try {
+        file = await documentService.createDocument(text);
+    } catch (error) {
+        await ctx.deleteMessage(thinkingMsg.message_id).catch(() => {});
+        if (error instanceof documentService.SpecGenerationError) {
+            console.error('Create spec generation failed:', error.message);
+            const refundUser = await userRepo.findUser(userId);
+            if (refundUser) await userRepo.updateUser(userId, { tokens: refundUser.tokens + 2 });
+            await ctx.reply('Sorry, I could not create that file. You have not been charged. Please try again.');
+            return;
+        }
+        console.error('Create render failed:', (error as Error).message);
+        await ctx.reply('Your file was written but could not be packaged. Please try rephrasing the request.');
+        return;
+    }
+
+    await ctx.deleteMessage(thinkingMsg.message_id).catch(() => {});
+
+    try {
+        await sendDocumentTg(ctx, file);
+    } catch (error) {
+        console.error('Create document send failed:', (error as Error).message);
+        await ctx.reply('The file was generated but could not be delivered. Please try again.');
+        return;
+    }
+
+    await ctx.reply(`Here is ${file.filename}. Send another request, or /exit to leave create mode.`);
+    await convoRepo.appendMessages(userId, [
+        { role: 'user', content: text },
+        { role: 'assistant', content: `Generated ${file.filename}` },
+    ]);
+    await prepService.touchSession(session);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

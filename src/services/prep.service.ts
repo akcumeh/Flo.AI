@@ -21,8 +21,12 @@ export async function getActiveSession(userId: string): Promise<ISession | null>
     return Session.findOne({ userId }) as unknown as Promise<ISession | null>;
 }
 
-/** Open a fresh prep session. Caller guarantees no active session exists. */
-export async function start(userId: string, platform: Platform): Promise<ISession> {
+/** Open a fresh session. Caller guarantees no active session exists. */
+export async function start(
+    userId: string,
+    platform: Platform,
+    mode: 'prep' | 'create' = 'prep'
+): Promise<ISession> {
     await ensureConnection();
     // Defensive: clear any stale session for this user before opening a new one.
     const existing = await getActiveSession(userId);
@@ -32,10 +36,16 @@ export async function start(userId: string, platform: Platform): Promise<ISessio
     return Session.create({
         userId,
         platform,
-        mode: 'prep',
+        mode,
         status: 'collecting',
         expiresAt: newExpiry(),
     }) as unknown as Promise<ISession>;
+}
+
+/** Refresh the inactivity expiry on session activity. */
+export async function touchSession(session: ISession): Promise<void> {
+    session.expiresAt = newExpiry();
+    await session.save();
 }
 
 /** Upload a file to Anthropic and attach it to the session (capped at MAX_FILES). */
