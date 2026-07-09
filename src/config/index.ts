@@ -20,6 +20,14 @@ export const config = {
     metaPhoneNumberId: optionalEnv('META_PHONE_NUMBER_ID') ?? '',
     metaAccessToken: optionalEnv('META_ACCESS_TOKEN') ?? '',
     metaVerifyToken: optionalEnv('META_VERIFY_TOKEN') ?? '',
-    adminTelegramIds: ['7258562406', '489613046'] as const,
+    adminTelegramIds: [
+        requireEnv('ADMIN_TG_ID'),
+        requireEnv('ADMIN_TG_ID_02'),
+    ] as const,
+    adminWhatsappIds: [
+        requireEnv('ADMIN_WA_ID'),
+        requireEnv('ADMIN_WA_ID_02'),
+        requireEnv('ADMIN_WA_ID_03')
+    ] as const,
     nodeEnv: optionalEnv('NODE_ENV') ?? 'development',
 } as const;

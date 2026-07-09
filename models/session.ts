@@ -41,7 +41,7 @@ const sessionSchema = new mongoose.Schema(
     {
         userId: { type: String, required: true, index: true },
         platform: { type: String, enum: ['tg', 'wa'], required: true },
-        mode: { type: String, enum: ['prep'], default: 'prep' },
+        mode: { type: String, enum: ['prep', 'create'], default: 'prep' },
         status: {
             type: String,
             enum: ['collecting', 'choosing', 'quizzing', 'completed'],

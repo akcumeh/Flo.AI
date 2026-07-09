@@ -7,11 +7,13 @@ import * as convoRepo from '../repositories/conversation.repository.js';
 import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
 import * as prepService from '../services/prep.service.js';
+import * as documentService from '../services/document.service.js';
+import { sendAnalytics } from '../services/analytics.service.js';
 import { RequestState } from '../../models/requestState.js';
 import { PaymentState } from '../../models/paymentState.js';
 import VerificationState from '../../models/verificationState.js';
 import { ensureConnection } from '../../db/connection.js';
-import type { ConversationMessage, ISession } from '../types/index.js';
+import type { ConversationMessage, ISession, IUser } from '../types/index.js';
 
 const META_API_BASE = 'https://graph.facebook.com/v21.0';
 
@@ -81,6 +83,31 @@ async function sendTemplate(
     });
 
     if (!result.success) throw new Error(result.error ?? 'Failed to send template');
+}
+
+async function uploadWaMedia(file: documentService.GeneratedFile): Promise<string> {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('file', new Blob([new Uint8Array(file.buffer)], { type: file.mimeType }), file.filename);
+    const res = await fetch(`${META_API_BASE}/${config.metaPhoneNumberId}/media`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.metaAccessToken}` },
+        body: form,
+    });
+    const data = (await res.json()) as { id?: string };
+    if (!data.id) throw new Error(`WA media upload failed: ${JSON.stringify(data)}`);
+    return data.id;
+}
+
+async function sendDocumentWa(waId: string, file: documentService.GeneratedFile): Promise<void> {
+    const mediaId = await uploadWaMedia(file);
+    const result = await sendMetaRequest(`${config.metaPhoneNumberId}/messages`, {
+        messaging_product: 'whatsapp',
+        to: waId.replace('wa:', ''),
+        type: 'document',
+        document: { id: mediaId, filename: file.filename },
+    });
+    if (!result.success) throw new Error(result.error ?? 'Failed to send document');
 }
 
 async function downloadMedia(mediaId: string): Promise<Buffer> {
@@ -283,23 +310,33 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
             }
         }
 
-        // Prep session routing takes precedence over payment/media/chat paths.
+        // Session routing (prep and create) takes precedence over payment/media/chat paths.
         const exSession = await prepService.getActiveSession(userId);
         const startsPrep = /^\/prep\b/i.test(body.trim());
+        const startsCreate = /^\/create\b/i.test(body.trim());
         const isExit = /^\/exit\b/i.test(body.trim());
 
         if (isExit) {
             if (exSession) {
+                const wasCreate = exSession.mode === 'create';
                 const result = await prepService.exit(exSession);
                 await sendMsg(
-                    result.wasCompleted
-                        ? "Prep session closed. You're back to normal chat, ask me anything!"
-                        : `Prep session ended. ${result.cost} token${result.cost === 1 ? '' : 's'} charged. You now have ${result.balanceAfter} tokens. Back to normal chat!`,
+                    wasCreate
+                        ? "Create mode ended. You're back to normal chat!"
+                        : result.wasCompleted
+                          ? "Prep session closed. You're back to normal chat, ask me anything!"
+                          : `Prep session ended. ${result.cost} token${result.cost === 1 ? '' : 's'} charged. You now have ${result.balanceAfter} tokens. Back to normal chat!`,
                     waId
                 );
             } else {
-                await sendMsg("You're not in a prep session right now.", waId);
+                await sendMsg("You're not in a session right now.", waId);
             }
+            res.status(200).send('OK');
+            return;
+        }
+
+        if (exSession?.mode === 'create' || startsCreate) {
+            await handleWaCreate(waId, userId, exSession, body, user);
             res.status(200).send('OK');
             return;
         }
@@ -553,9 +590,22 @@ async function handleWaCommand(
             return;
         }
 
+        case '/users': {
+            const phone = waId.replace('wa:', '');
+            if (!(config.adminWhatsappIds as readonly string[]).includes(phone)) {
+                await sendMsg('Sorry, this is an invalid command.', waId);
+                res.status(200).send('OK');
+                return;
+            }
+            await sendMsg('Fetching analytics...', waId);
+            await sendAnalytics('week');
+            res.status(200).send('OK');
+            return;
+        }
+
         case '/help': {
             await sendMsg(
-                `Here are the commands you can use:\n\n/start - Start a NEW conversation thread\n/about - Learn more about Florence*\n/tokens - See how many tokens you have left\n/payments - Top up your tokens\n/conversations - View and continue previous conversations\n/transactions - View your transaction history\n/streak - Check your daily streak\n/prep - Generate a scored quiz from your own materials\n/exit - Leave prep mode\n/verify - Verify your payment status\n/help - Get a list of all commands [YOU ARE HERE]`,
+                `Here are the commands you can use:\n\n/start - Start a NEW conversation thread\n/about - Learn more about Florence*\n/tokens - See how many tokens you have left\n/payments - Top up your tokens\n/conversations - View and continue previous conversations\n/transactions - View your transaction history\n/streak - Check your daily streak\n/prep - Generate a scored quiz from your own materials\n/create - Generate a downloadable file (docx, pdf, md, pptx, xlsx)\n/exit - Leave prep or create mode\n/verify - Verify your payment status\n/help - Get a list of all commands [YOU ARE HERE]`,
                 waId
             );
             res.status(200).send('OK');
@@ -748,6 +798,81 @@ async function sendWaList(waId: string, bodyText: string, options: string[]): Pr
         },
     });
     if (!result.success) throw new Error(result.error ?? 'Failed to send list message');
+}
+
+async function handleWaCreate(
+    waId: string,
+    userId: string,
+    session: ISession | null,
+    body: string,
+    user: IUser
+): Promise<void> {
+    if (/^\/create\b/i.test(body.trim())) {
+        if (session) {
+            await sendMsg('You already have a session running. Send /exit to end it first.', waId);
+            return;
+        }
+        if (user.tokens < 2) {
+            await sendMsg('You need at least 2 tokens to use create mode. Send /payments to top up.', waId);
+            return;
+        }
+        await prepService.start(userId, 'wa', 'create');
+        await sendMsg(
+            'You are in create mode. Describe the file you want: docx, pdf, md, pptx, or xlsx. Each request costs 2 tokens. Send /exit to leave.',
+            waId
+        );
+        return;
+    }
+
+    if (!session) return;
+
+    if (body.startsWith('/')) {
+        await sendMsg('You are in create mode. Send /exit to leave before using other commands.', waId);
+        return;
+    }
+
+    if (!body.trim()) {
+        await sendMsg('Describe the file you want me to create, or send /exit to leave create mode.', waId);
+        return;
+    }
+
+    if (user.tokens < 2) {
+        await sendMsg('You need 2 tokens per file. Send /payments to top up.', waId);
+        return;
+    }
+
+    await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
+
+    let file: documentService.GeneratedFile;
+    try {
+        file = await documentService.createDocument(body);
+    } catch (error) {
+        if (error instanceof documentService.SpecGenerationError) {
+            console.error('Create spec generation failed:', error.message);
+            const refundUser = await userRepo.findUser(userId);
+            if (refundUser) await userRepo.updateUser(userId, { tokens: refundUser.tokens + 2 });
+            await sendMsg('Sorry, I could not create that file. You have not been charged. Please try again.', waId);
+            return;
+        }
+        console.error('Create render failed:', (error as Error).message);
+        await sendMsg('Your file was written but could not be packaged. Please try rephrasing the request.', waId);
+        return;
+    }
+
+    try {
+        await sendDocumentWa(waId, file);
+    } catch (error) {
+        console.error('Create document send failed:', (error as Error).message);
+        await sendMsg('The file was generated but could not be delivered. Please try again.', waId);
+        return;
+    }
+
+    await sendMsg(`Here is ${file.filename}. Send another request, or /exit to leave create mode.`, waId);
+    await convoRepo.appendMessages(userId, [
+        { role: 'user', content: body },
+        { role: 'assistant', content: `Generated ${file.filename}` },
+    ]);
+    await prepService.touchSession(session);
 }
 
 async function handleWaPrep(
