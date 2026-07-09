@@ -21,5 +21,6 @@ export const config = {
     metaAccessToken: optionalEnv('META_ACCESS_TOKEN') ?? '',
     metaVerifyToken: optionalEnv('META_VERIFY_TOKEN') ?? '',
     adminTelegramIds: ['7258562406', '489613046'] as const,
+    adminWhatsappIds: ['2348164975875', '2348143770724', '2347086937724'] as const,
     nodeEnv: optionalEnv('NODE_ENV') ?? 'development',
 } as const;

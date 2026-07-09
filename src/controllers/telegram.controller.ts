@@ -9,6 +9,7 @@ import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
 import * as streakService from '../services/streak.service.js';
 import * as prepService from '../services/prep.service.js';
+import { sendAnalytics } from '../services/analytics.service.js';
 import { ClaudeTimeoutError } from '../utils/errors.js';
 import { RequestState } from '../../models/requestState.js';
 import { PaymentState } from '../../models/paymentState.js';
@@ -429,6 +430,21 @@ bot.command('exit', async (ctx) => {
     } catch (error) {
         console.error('Error in /exit command:', error);
         await ctx.reply('Sorry, something went wrong ending the session.');
+    }
+});
+
+bot.command('users', async (ctx) => {
+    try {
+        const tgId = String(ctx.from!.id);
+        if (!(config.adminTelegramIds as readonly string[]).includes(tgId)) {
+            await ctx.reply('Sorry, this is an invalid command.');
+            return;
+        }
+        await ctx.reply('Fetching analytics...');
+        await sendAnalytics('week');
+    } catch (error) {
+        console.error('Error in /users command:', error);
+        await ctx.reply('Sorry, something went wrong fetching analytics.');
     }
 });
 

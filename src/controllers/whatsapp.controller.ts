@@ -7,6 +7,7 @@ import * as convoRepo from '../repositories/conversation.repository.js';
 import * as assistantService from '../services/assistant.service.js';
 import * as paystackService from '../services/paystack.service.js';
 import * as prepService from '../services/prep.service.js';
+import { sendAnalytics } from '../services/analytics.service.js';
 import { RequestState } from '../../models/requestState.js';
 import { PaymentState } from '../../models/paymentState.js';
 import VerificationState from '../../models/verificationState.js';
@@ -298,7 +299,7 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
                     waId
                 );
             } else {
-                await sendMsg("You're not in a prep session right now.", waId);
+                await sendMsg("You're not in a session right now.", waId);
             }
             res.status(200).send('OK');
             return;
