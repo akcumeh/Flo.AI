@@ -78,7 +78,7 @@ type SpecMessage = { role: 'user' | 'assistant'; content: string };
 
 async function callSpecModel(messages: SpecMessage[]): Promise<string> {
     const params = {
-        model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-5-5',
         max_tokens: 4000,
         thinking: { type: 'adaptive' },
         output_config: { effort: 'low' },

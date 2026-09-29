@@ -10,6 +10,7 @@ import type {
     SessionFile,
     ExamQuestion,
 } from '../types/index.js';
+import strict from 'node:assert/strict';
 
 const anthropic = new Anthropic({ apiKey: config.claudeApiKey });
 
@@ -30,9 +31,8 @@ function withDeadline<T>(p: Promise<T>, msLeft: number): Promise<T> {
 }
 
 const MODELS = {
-    GENERAL_1: 'claude-sonnet-4-6',
-    GENERAL_2: 'claude-opus-4-8',
-    PREP: 'claude-sonnet-4-6',
+    GENERAL_1: 'claude-sonnet-5-5',
+    PREP: 'claude-sonnet-5-5',
 } as const;
 
 // Files API beta header — required on any messages call that references an
@@ -567,14 +567,17 @@ export async function deletePrepFile(fileId: string): Promise<void> {
 
 const EMIT_QUESTIONS_TOOL = {
     name: 'emit_questions',
+    strict: true,
     description: 'Return the generated quiz questions as structured data.',
     input_schema: {
         type: 'object',
+        additionalProperties: false,
         properties: {
             questions: {
                 type: 'array',
                 items: {
                     type: 'object',
+                    additionalProperties: false,
                     properties: {
                         type: { type: 'string', enum: ['mcq', 'theory', 'short'] },
                         question: { type: 'string' },
@@ -595,9 +598,11 @@ const EMIT_QUESTIONS_TOOL = {
 
 const GRADE_ANSWER_TOOL = {
     name: 'grade_answer',
+    strict: true,
     description: 'Grade the student answer and return a teaching explanation.',
     input_schema: {
         type: 'object',
+        additionalProperties: false,
         properties: {
             correct: { type: 'boolean' },
             awardedMarks: { type: 'number' },
@@ -625,7 +630,7 @@ Return the questions via the emit_questions tool only.`;
     const res = await prepCreate({
         system: prepSystemPrompt,
         tools: [EMIT_QUESTIONS_TOOL],
-        tool_choice: { type: 'tool', name: 'emit_questions' },
+        tool_choice: { type: 'auto' },
         messages,
     });
 
