@@ -1,8 +1,7 @@
-import { User } from '../../models/user.js';
-import { ensureConnection } from '../../db/connection.js';
+import * as userRepo from '../repositories/user.repository.js';
 import { config } from '../config/index.js';
 import { Telegraf } from 'telegraf';
-import type { IUser, StreakResult, StreakInfo } from '../types/index.js';
+import type { StreakResult, StreakInfo } from '../types/index.js';
 
 const bot = new Telegraf(config.botToken);
 
@@ -18,9 +17,7 @@ function isYesterday(date: Date, today = new Date()): boolean {
 
 export async function updateStreak(userId: string): Promise<StreakResult | null> {
     try {
-        await ensureConnection();
-
-        const user = await User.findOne({ userId }) as unknown as IUser & { save(): Promise<void> };
+        const user = await userRepo.findUser(userId);
         if (!user) return null;
 
         const now = new Date();
@@ -29,7 +26,7 @@ export async function updateStreak(userId: string): Promise<StreakResult | null>
         if (!lastActive) {
             user.streak = 1;
             user.lastActiveDate = now;
-            await user.save();
+            await userRepo.setStreak(userId, user.streak, now);
             return { user, isNewStreak: true, streakIncreased: true };
         }
 
@@ -40,13 +37,13 @@ export async function updateStreak(userId: string): Promise<StreakResult | null>
         if (isYesterday(lastActive, now)) {
             user.streak += 1;
             user.lastActiveDate = now;
-            await user.save();
+            await userRepo.setStreak(userId, user.streak, now);
             return { user, isNewStreak: false, streakIncreased: true };
         }
 
         user.streak = 1;
         user.lastActiveDate = now;
-        await user.save();
+        await userRepo.setStreak(userId, user.streak, now);
         return { user, isNewStreak: true, streakIncreased: true };
     } catch (error) {
         console.error('Error updating user streak:', error);
@@ -56,9 +53,7 @@ export async function updateStreak(userId: string): Promise<StreakResult | null>
 
 export async function checkStreakReward(userId: string): Promise<boolean> {
     try {
-        await ensureConnection();
-
-        const user = await User.findOne({ userId }) as unknown as IUser & { save(): Promise<void> };
+        const user = await userRepo.findUser(userId);
         if (!user) return false;
 
         if (user.streak > 0 && user.streak % 7 === 0) {
@@ -66,9 +61,7 @@ export async function checkStreakReward(userId: string): Promise<boolean> {
             const lastReward = user.lastStreakReward ? new Date(user.lastStreakReward) : null;
 
             if (!lastReward || !isSameDay(lastReward, now)) {
-                user.tokens += 10;
-                user.lastStreakReward = now;
-                await user.save();
+                await userRepo.grantStreakReward(userId, 10, now);
 
                 const telegramId = userId.replace('tg-', '');
                 const firstName = user.name.split(' ')[0];
@@ -92,9 +85,7 @@ export async function checkStreakReward(userId: string): Promise<boolean> {
 
 export async function getStreakInfo(userId: string): Promise<StreakInfo | null> {
     try {
-        await ensureConnection();
-
-        const user = await User.findOne({ userId }) as unknown as IUser | null;
+        const user = await userRepo.findUser(userId);
         if (!user) return null;
 
         return {

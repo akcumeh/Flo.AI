@@ -1,5 +1,6 @@
 import { Transaction } from '../../models/transactions.js';
 import { ensureConnection } from '../../db/connection.js';
+import { plain, plainOrNull, plainList } from './mongo.util.js';
 import type { ITransaction } from '../types/index.js';
 
 export interface CreateTransactionDto {
@@ -11,19 +12,29 @@ export interface CreateTransactionDto {
     metadata?: object;
 }
 
+export function hasExpired(tx: ITransaction): boolean {
+    return new Date() > tx.expiresAt;
+}
+
 export async function createTransaction(data: CreateTransactionDto): Promise<ITransaction> {
     await ensureConnection();
-    return await Transaction.create(data) as unknown as ITransaction;
+    const created = await Transaction.create(data);
+    return plain<ITransaction>(created.toObject());
 }
 
 export async function findByReference(reference: string): Promise<ITransaction | null> {
     await ensureConnection();
-    return await Transaction.findOne({ reference }) as unknown as ITransaction | null;
+    return plainOrNull<ITransaction>(await Transaction.findOne({ reference }).lean());
 }
 
 export async function findUserTransactions(userId: string): Promise<ITransaction[]> {
     await ensureConnection();
-    return await Transaction.find({ userId }).sort({ createdAt: -1 }) as unknown as ITransaction[];
+    return plainList<ITransaction>(await Transaction.find({ userId }).sort({ createdAt: -1 }).lean());
+}
+
+export async function markFailed(reference: string): Promise<void> {
+    await ensureConnection();
+    await Transaction.updateOne({ reference }, { $set: { status: 'failed' } });
 }
 
 export async function markSuccess(reference: string, gatewayResponse: object): Promise<ITransaction> {
@@ -32,24 +43,28 @@ export async function markSuccess(reference: string, gatewayResponse: object): P
         { reference },
         { $set: { status: 'success', completedAt: new Date(), gatewayResponse } },
         { new: true }
-    );
+    ).lean();
     if (!tx) throw new Error(`Transaction not found: ${reference}`);
-    return tx as unknown as ITransaction;
+    return plain<ITransaction>(tx);
 }
 
 export async function claimSuccess(reference: string, gatewayResponse: object): Promise<ITransaction | null> {
     await ensureConnection();
-    return await Transaction.findOneAndUpdate(
-        { reference, status: { $ne: 'success' } },
-        { $set: { status: 'success', completedAt: new Date(), gatewayResponse } },
-        { new: true }
-    ) as unknown as ITransaction | null;
+    return plainOrNull<ITransaction>(
+        await Transaction.findOneAndUpdate(
+            { reference, status: { $ne: 'success' } },
+            { $set: { status: 'success', completedAt: new Date(), gatewayResponse } },
+            { new: true }
+        ).lean()
+    );
 }
 
 export async function findRecentSuccessful(since: Date): Promise<ITransaction[]> {
     await ensureConnection();
-    return await Transaction.find({
-        status: 'success',
-        completedAt: { $gte: since },
-    }).lean() as unknown as ITransaction[];
+    return plainList<ITransaction>(
+        await Transaction.find({
+            status: 'success',
+            completedAt: { $gte: since },
+        }).lean()
+    );
 }

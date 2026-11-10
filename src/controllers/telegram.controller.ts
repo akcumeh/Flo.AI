@@ -12,13 +12,13 @@ import * as prepService from '../services/prep.service.js';
 import * as documentService from '../services/document.service.js';
 import { sendAnalytics } from '../services/analytics.service.js';
 import { ClaudeTimeoutError } from '../utils/errors.js';
-import { RequestState } from '../../models/requestState.js';
-import { PaymentState } from '../../models/paymentState.js';
-import { MediaGroup } from '../../models/mediaGroup.js';
-import VerificationState from '../../models/verificationState.js';
+import * as requestRepo from '../repositories/request.repository.js';
+import * as paymentRepo from '../repositories/payment.repository.js';
+import * as verificationRepo from '../repositories/verification.repository.js';
+import * as mediaGroupRepo from '../repositories/mediaGroup.repository.js';
+import * as sessionRepo from '../repositories/session.repository.js';
 import { downloadTelegramFile } from '../../utils/getMsgContent.js';
-import { ensureConnection } from '../../db/connection.js';
-import type { IUser, ConversationMessage, ISession } from '../types/index.js';
+import type { IUser, ConversationMessage, ISession, IPaymentState } from '../types/index.js';
 
 export const bot = new Telegraf(config.botToken);
 const PREFIX = 'tg-';
@@ -194,7 +194,6 @@ bot.on('inline_query', async (ctx) => {
 bot.command('start', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
 
         let user = await userRepo.findUser(userId);
         let isNewUser = false;
@@ -233,7 +232,6 @@ bot.command('about', async (ctx) => {
 bot.command('tokens', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
         const user = await userRepo.findUser(userId);
         if (!user) return ctx.reply('You need to start the bot first. Please send /start.');
         await ctx.reply(`You have ${user.tokens} tokens. To top up, send /payments.`);
@@ -246,15 +244,10 @@ bot.command('tokens', async (ctx) => {
 bot.command('payments', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
         const user = await userRepo.findUser(userId);
         if (!user) return ctx.reply('You need to start the bot first. Please send /start.');
 
-        await PaymentState.findOneAndUpdate(
-            { userId },
-            { step: 'bundle_select', createdAt: new Date() },
-            { upsert: true, new: true }
-        );
+        await paymentRepo.upsertPaymentState(userId, { step: 'bundle_select', createdAt: new Date() });
 
         const bundleRows: Array<Array<{ text: string; callback_data: string }>> = [];
         const { BUNDLES } = paystackService;
@@ -295,7 +288,6 @@ bot.command('streak', async (ctx) => {
 bot.command('transactions', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
         const user = await userRepo.findUser(userId);
         if (!user) return ctx.reply('You need to start the bot first. Please send /start.');
 
@@ -329,7 +321,6 @@ bot.command('transactions', async (ctx) => {
 bot.command('verify', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
         const user = await userRepo.findUser(userId);
         if (!user) return ctx.reply('You need to start the bot first. Please send /start.');
 
@@ -352,7 +343,6 @@ bot.command('verify', async (ctx) => {
 bot.command('conversations', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
         const user = await userRepo.findUser(userId);
         if (!user) return ctx.reply('You need to start the bot first. Please send /start.');
 
@@ -382,7 +372,6 @@ bot.command('research', async (ctx) => {
 bot.command('prep', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
 
         const active = await prepService.getActiveSession(userId);
         if (active) {
@@ -403,7 +392,7 @@ bot.command('prep', async (ctx) => {
         const session = await prepService.start(userId, 'tg');
         const count = parseQuestionCount(ctx.message.text);
         if (count) session.requestedCount = count;
-        await session.save();
+        await sessionRepo.saveSession(session);
 
         await ctx.reply(
             `Prep mode is on.\n\nUpload up to ${prepService.MAX_FILES} files (PDFs or images) to base your questions on. Each generated question costs 1 token.\n\nWhen you've sent your files, tell me how many questions you want (a number from 1 to ${prepService.MAX_QUESTIONS}).\n\nSend /exit at any time to leave prep mode.`
@@ -417,7 +406,6 @@ bot.command('prep', async (ctx) => {
 bot.command('create', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
 
         const active = await prepService.getActiveSession(userId);
         if (active) {
@@ -448,7 +436,6 @@ bot.command('create', async (ctx) => {
 bot.command('exit', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
 
         const session = await prepService.getActiveSession(userId);
         if (!session) {
@@ -523,7 +510,6 @@ bot.command('help', async (ctx) => {
 bot.action(/^bundle_(\d+)$/, async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
         const user = await userRepo.findUser(userId);
         if (!user) return ctx.reply('You need to start the bot first. Please send /start.');
 
@@ -534,20 +520,16 @@ bot.action(/^bundle_(\d+)$/, async (ctx) => {
         await ctx.answerCbQuery();
         await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
 
-        const state = await PaymentState.findOneAndUpdate(
-            { userId },
-            {
-                step: user.email ? 'processing' : 'email',
-                amount: bundle.amount,
-                tokens: bundle.tokens,
-            },
-            { upsert: true, new: true }
-        );
+        const state = await paymentRepo.upsertPaymentState(userId, {
+            step: user.email ? 'processing' : 'email',
+            amount: bundle.amount,
+            tokens: bundle.tokens,
+        });
 
         if (user.email) {
-            (state as unknown as { email?: string; save(): Promise<void> }).email = user.email;
-            await (state as unknown as { save(): Promise<void> }).save();
-            return processPayment(ctx, user, state as unknown as PaymentStateDoc);
+            state.email = user.email;
+            await paymentRepo.savePaymentState(state);
+            return processPayment(ctx, user, state);
         }
 
         return ctx.reply(
@@ -563,7 +545,6 @@ bot.action(/^bundle_(\d+)$/, async (ctx) => {
 bot.action(/convo_(\d+)/, async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
 
         const convoIndex = parseInt(ctx.match![1], 10);
         const convos = await convoRepo.getSavedConversations(userId);
@@ -583,7 +564,6 @@ bot.action(/convo_(\d+)/, async (ctx) => {
 
 bot.action(/^verify_(.+)$/, async (ctx) => {
     try {
-        await ensureConnection();
         const userId = PREFIX + ctx.from!.id;
         const user = await userRepo.findUser(userId);
         if (!user) {
@@ -616,12 +596,8 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
     try {
         const requestId = ctx.match![1];
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
 
-        const request = await RequestState.findOneAndUpdate(
-            { _id: requestId, userId, status: 'processing' },
-            { $set: { status: 'cancelled' } }
-        );
+        const request = await requestRepo.cancelRequest(requestId, userId);
 
         if (!request) {
             await ctx.answerCbQuery('This request already ended.');
@@ -633,7 +609,7 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
             return;
         }
 
-        const refundAmount = (request as unknown as { tokenCost?: number }).tokenCost ?? 1;
+        const refundAmount = request.tokenCost ?? 1;
         const user = await userRepo.findUser(userId);
         if (user) {
             await userRepo.updateUser(userId, { tokens: user.tokens + refundAmount });
@@ -657,7 +633,6 @@ bot.action(/^cancel_(.+)$/, async (ctx) => {
 bot.action(/^exam_(\d+)$/, async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
-        await ensureConnection();
 
         const session = await prepService.getActiveSession(userId);
         if (!session || session.status !== 'quizzing') {
@@ -712,7 +687,7 @@ bot.on(message('photo'), async (ctx) => {
 
     await sweepStaleRequests(userId);
 
-    const existingRequest = await RequestState.findOne({ userId, messageId });
+    const existingRequest = await requestRepo.findRequestByMessage(messageId, userId);
     if (existingRequest) return;
 
     let user = await userRepo.findUser(userId);
@@ -728,34 +703,33 @@ bot.on(message('photo'), async (ctx) => {
     const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
     const caption = ctx.message.caption || 'Assess the following image.';
 
-    const requestState = new RequestState({
-        userId,
-        tokenCost: 2,
-        messageId,
-        status: 'processing',
-        prompt: caption,
-        isMedia: true,
-        mediaType: 'photo',
-        mediaFileId: fileId,
-        createdAt: new Date(),
-    });
+    const requestId = requestRepo.newRequestId();
 
     const thinkingMsg = await ctx.reply('Thinking...', {
         reply_markup: {
-            inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
+            inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestId}` }]],
         },
     });
-    requestState.thinkingMessageId = thinkingMsg.message_id;
-    requestState.chatId = ctx.chat.id;
 
     try {
-        await requestState.save();
+        await requestRepo.createRequest({
+            id: requestId,
+            userId,
+            tokenCost: 2,
+            messageId,
+            prompt: caption,
+            isMedia: true,
+            mediaType: 'photo',
+            mediaFileId: fileId,
+            thinkingMessageId: thinkingMsg.message_id,
+            chatId: ctx.chat.id,
+        });
         await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
 
         const imgBuffer = await downloadTelegramFile(bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } }, fileId);
 
-        const currentRequest = await RequestState.findById(requestState._id);
-        if (!currentRequest || (currentRequest as unknown as { status: string }).status !== 'processing') return;
+        const currentRequest = await requestRepo.getRequest(requestId);
+        if (!currentRequest || currentRequest.status !== 'processing') return;
 
         const anthropicFileId = await assistantService.uploadChatFile(
             Buffer.from(imgBuffer),
@@ -771,10 +745,7 @@ bot.on(message('photo'), async (ctx) => {
 
         // Atomically claim processing -> completed. If a cancel won the race it
         // already flipped + refunded, so we must not send a (now free) answer.
-        const claimedDone = await RequestState.findOneAndUpdate(
-            { _id: requestState._id, status: 'processing' },
-            { $set: { status: 'completed' } }
-        );
+        const claimedDone = await requestRepo.claimRequest(requestId, 'completed');
         if (!claimedDone) return;
 
         await Promise.all([
@@ -791,10 +762,7 @@ bot.on(message('photo'), async (ctx) => {
     } catch (error) {
         console.error('Error processing photo:', error);
 
-        const claimed = await RequestState.findOneAndUpdate(
-            { _id: requestState._id, status: 'processing' },
-            { $set: { status: 'failed', error: (error as Error).message } }
-        );
+        const claimed = await requestRepo.claimRequest(requestId, 'failed', (error as Error).message);
         if (!claimed) return;
 
         const refundUser = await userRepo.findUser(userId);
@@ -824,7 +792,7 @@ bot.on(message('document'), async (ctx) => {
 
     await sweepStaleRequests(userId);
 
-    const existingRequest = await RequestState.findOne({ userId, messageId });
+    const existingRequest = await requestRepo.findRequestByMessage(messageId, userId);
     if (existingRequest) return;
 
     let user = await userRepo.findUser(userId);
@@ -850,36 +818,35 @@ bot.on(message('document'), async (ctx) => {
         return;
     }
 
-    const requestState = new RequestState({
-        userId,
-        tokenCost: 2,
-        messageId,
-        status: 'processing',
-        prompt: caption,
-        isMedia: true,
-        mediaType: 'document',
-        mediaFileId: fileId,
-        mediaMimeType: mimeType,
-        mediaFileName: fileName,
-        createdAt: new Date(),
-    });
+    const requestId = requestRepo.newRequestId();
 
     const thinkingMsg = await ctx.reply('Thinking...', {
         reply_markup: {
-            inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
+            inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestId}` }]],
         },
     });
-    requestState.thinkingMessageId = thinkingMsg.message_id;
-    requestState.chatId = ctx.chat.id;
 
     try {
-        await requestState.save();
+        await requestRepo.createRequest({
+            id: requestId,
+            userId,
+            tokenCost: 2,
+            messageId,
+            prompt: caption,
+            isMedia: true,
+            mediaType: 'document',
+            mediaFileId: fileId,
+            mediaMimeType: mimeType,
+            mediaFileName: fileName,
+            thinkingMessageId: thinkingMsg.message_id,
+            chatId: ctx.chat.id,
+        });
         await userRepo.updateUser(userId, { tokens: user.tokens - 2 });
 
         const fileBuffer = await downloadTelegramFile(bot as unknown as { telegram: { getFile(id: string): Promise<{ file_path: string; file_size?: number }> } }, fileId);
 
-        const currentRequest = await RequestState.findById(requestState._id);
-        if (!currentRequest || (currentRequest as unknown as { status: string }).status !== 'processing') return;
+        const currentRequest = await requestRepo.getRequest(requestId);
+        if (!currentRequest || currentRequest.status !== 'processing') return;
 
         const anthropicFileId = await assistantService.uploadChatFile(Buffer.from(fileBuffer), fileName, mimeType);
         fileRepo.trackFile(userId, anthropicFileId);
@@ -891,10 +858,7 @@ bot.on(message('document'), async (ctx) => {
 
         // Atomically claim processing -> completed. If a cancel won the race it
         // already flipped + refunded, so we must not send a (now free) answer.
-        const claimedDone = await RequestState.findOneAndUpdate(
-            { _id: requestState._id, status: 'processing' },
-            { $set: { status: 'completed' } }
-        );
+        const claimedDone = await requestRepo.claimRequest(requestId, 'completed');
         if (!claimedDone) return;
 
         await Promise.all([
@@ -911,10 +875,7 @@ bot.on(message('document'), async (ctx) => {
     } catch (error) {
         console.error('Error processing document:', error);
 
-        const claimed = await RequestState.findOneAndUpdate(
-            { _id: requestState._id, status: 'processing' },
-            { $set: { status: 'failed', error: (error as Error).message } }
-        );
+        const claimed = await requestRepo.claimRequest(requestId, 'failed', (error as Error).message);
         if (!claimed) return;
 
         const refundUser = await userRepo.findUser(userId);
@@ -948,9 +909,8 @@ bot.on('message', async (ctx) => {
     try {
         const userId = PREFIX + ctx.from!.id;
         const messageId = (ctx.message as { message_id: number }).message_id;
-        await ensureConnection();
 
-        const existingRequest = await RequestState.findOne({ userId, messageId });
+        const existingRequest = await requestRepo.findRequestByMessage(messageId, userId);
         if (existingRequest) return;
 
         // An active session intercepts all plain text (prep counts/answers, create prompts).
@@ -964,9 +924,9 @@ bot.on('message', async (ctx) => {
             return;
         }
 
-        const paymentState = await PaymentState.findOne({ userId });
-        if (paymentState && (paymentState as unknown as { step: string }).step !== 'init') {
-            await handlePaymentMessage(ctx, userId, paymentState as unknown as PaymentStateDoc);
+        const paymentState = await paymentRepo.getPaymentState(userId);
+        if (paymentState && paymentState.step !== 'init') {
+            await handlePaymentMessage(ctx, userId, paymentState);
             return;
         }
 
@@ -979,20 +939,10 @@ bot.on('message', async (ctx) => {
 
 /* === Helper Types === */
 
-interface PaymentStateDoc {
-    userId: string;
-    step: string;
-    amount: number;
-    tokens: number;
-    email?: string;
-    reference?: string;
-    save(): Promise<void>;
-}
-
 /* === Helper Functions === */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function handlePaymentMessage(ctx: any, userId: string, state: PaymentStateDoc): Promise<void> {
+async function handlePaymentMessage(ctx: any, userId: string, state: IPaymentState): Promise<void> {
     try {
         const user = await userRepo.findUser(userId);
         if (!user) return ctx.reply('Session expired. Please start again with /payments.');
@@ -1006,7 +956,7 @@ async function handlePaymentMessage(ctx: any, userId: string, state: PaymentStat
             await userRepo.updateUser(userId, { email });
             state.email = email;
             state.step = 'processing';
-            await state.save();
+            await paymentRepo.savePaymentState(state);
             return processPayment(ctx, user, state);
         }
     } catch (error) {
@@ -1017,7 +967,7 @@ async function handlePaymentMessage(ctx: any, userId: string, state: PaymentStat
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function processPayment(ctx: any, user: IUser, state: PaymentStateDoc): Promise<void> {
+async function processPayment(ctx: any, user: IUser, state: IPaymentState): Promise<void> {
     try {
         await ctx.reply('Setting up your payment...');
         const callbackUrl = `${config.botWebhookUrl}/payment`;
@@ -1032,7 +982,7 @@ async function processPayment(ctx: any, user: IUser, state: PaymentStateDoc): Pr
 
         if (paymentResult.success) {
             state.reference = paymentResult.reference;
-            await state.save();
+            await paymentRepo.savePaymentState(state);
 
             await ctx.reply(
                 `Please complete your payment of ₦${state.amount} for ${state.tokens} tokens:\n\n${paymentResult.authorizationUrl}\n\nOnce you've paid, tap the button below to verify and receive your tokens:`,
@@ -1069,13 +1019,9 @@ async function performVerification(ctx: any, user: IUser, reference: string, pro
     try {
         const cleanReference = reference.replace(/[^a-zA-Z0-9-]/g, '');
 
-        const existingVerification = await VerificationState.findOne({
-            userId: user.userId,
-            reference: cleanReference,
-            status: 'verified',
-        });
+        const alreadyVerified = await verificationRepo.hasVerified(user.userId, cleanReference);
 
-        if (existingVerification) {
+        if (alreadyVerified) {
             if (processingMsg?.message_id) {
                 try {
                     await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
@@ -1103,15 +1049,9 @@ async function performVerification(ctx: any, user: IUser, reference: string, pro
             const newTokens = user.tokens + (result.tokens ?? 0);
             await userRepo.updateUser(user.userId, { tokens: newTokens });
 
-            await VerificationState.create({
-                userId: user.userId,
-                reference: cleanReference,
-                status: 'verified',
-                tokens: result.tokens,
-                verifiedAt: new Date(),
-            });
+            await verificationRepo.recordVerification(user.userId, cleanReference, result.tokens ?? 0);
 
-            await PaymentState.deleteOne({ userId: user.userId });
+            await paymentRepo.deletePaymentState(user.userId);
 
             await ctx.reply(
                 `Payment Verified!\n\nAdded: ${result.tokens} tokens\nNew balance: ${newTokens} tokens\n\nThank you for your payment!`
@@ -1142,20 +1082,10 @@ async function performVerification(ctx: any, user: IUser, reference: string, pro
 
 async function sweepStaleRequests(userId: string): Promise<void> {
     const cutoff = new Date(Date.now() - 65_000);
-    const stale = await RequestState.find({ userId, status: 'processing', createdAt: { $lt: cutoff } });
+    const stale = await requestRepo.findStaleProcessing(userId, cutoff);
 
-    for (const req of stale) {
-        const r = req as unknown as {
-            _id: unknown;
-            tokenCost?: number;
-            thinkingMessageId?: number;
-            chatId?: string | number;
-        };
-
-        const claimed = await RequestState.findOneAndUpdate(
-            { _id: r._id, status: 'processing' },
-            { $set: { status: 'failed', error: 'timed out (swept)' } }
-        );
+    for (const r of stale) {
+        const claimed = await requestRepo.claimRequest(r.id, 'failed', 'timed out (swept)');
         if (!claimed) continue;
 
         const refund = r.tokenCost ?? 1;
@@ -1193,28 +1123,27 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
     const text = (ctx.message as { text?: string }).text ?? '';
     const messageId = (ctx.message as { message_id: number }).message_id;
 
-    const requestState = new RequestState({
-        userId,
-        tokenCost: 1,
-        messageId,
-        status: 'processing',
-        prompt: text,
-        createdAt: new Date(),
-    });
+    const requestId = requestRepo.newRequestId();
 
     const thinkingMsg = await ctx.reply('Thinking...', {
         reply_markup: {
-            inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestState._id}` }]],
+            inline_keyboard: [[{ text: 'Cancel', callback_data: `cancel_${requestId}` }]],
         },
     });
-    requestState.thinkingMessageId = thinkingMsg.message_id;
-    requestState.chatId = ctx.chat.id;
 
     try {
-        await requestState.save();
+        await requestRepo.createRequest({
+            id: requestId,
+            userId,
+            tokenCost: 1,
+            messageId,
+            prompt: text,
+            thinkingMessageId: thinkingMsg.message_id,
+            chatId: ctx.chat.id,
+        });
 
         if (user.tokens < 1) {
-            await requestState.updateOne({ status: 'failed' });
+            await requestRepo.setRequestStatus(requestId, 'failed');
             await ctx.deleteMessage(thinkingMsg.message_id).catch(() => {});
             await ctx.reply("You don't have enough tokens. Send /payments to top up.");
             return;
@@ -1228,10 +1157,7 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
 
         // Atomically claim processing -> completed. If a cancel won the race it
         // already flipped + refunded, so we must not send a (now free) answer.
-        const claimedDone = await RequestState.findOneAndUpdate(
-            { _id: requestState._id, status: 'processing' },
-            { $set: { status: 'completed' } }
-        );
+        const claimedDone = await requestRepo.claimRequest(requestId, 'completed');
         if (!claimedDone) return;
 
         await Promise.all([
@@ -1251,10 +1177,7 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
         // Atomically flip processing -> failed. If the claim misses, the request
         // was already cancelled/finalized elsewhere and refunded there, so we must
         // not refund (or reply) again.
-        const claimed = await RequestState.findOneAndUpdate(
-            { _id: requestState._id, status: 'processing' },
-            { $set: { status: 'failed', error: (error as Error).message } }
-        );
+        const claimed = await requestRepo.claimRequest(requestId, 'failed', (error as Error).message);
         if (!claimed) return;
 
         const refundUser = await userRepo.findUser(userId);
@@ -1272,25 +1195,8 @@ async function handleRegularMessage(ctx: any, userId: string): Promise<void> {
 
 async function processMediaGroup(mediaGroupId: string, userId: string): Promise<void> {
     try {
-        await ensureConnection();
-
-        const mediaGroup = await MediaGroup.findOne({
-            userId,
-            mediaGroupId,
-            status: 'collecting',
-        });
-
-        if (!mediaGroup) return;
-        const mg = mediaGroup as unknown as {
-            status: string;
-            lastActivity: Date;
-            mediaItems: Array<{ fileId: string; type: string; mimeType?: string }>;
-            tokenCost: number;
-            caption?: string;
-            result?: string;
-            error?: string;
-            save(): Promise<void>;
-        };
+        const mg = await mediaGroupRepo.getCollectingGroup(userId, mediaGroupId);
+        if (!mg) return;
 
         if (new Date() < mg.lastActivity) return;
         if (!mg.mediaItems.length) return;
@@ -1301,9 +1207,7 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
         const telegramId = userId.substring(PREFIX.length);
 
         if (user.tokens < mg.tokenCost) {
-            mg.status = 'failed';
-            mg.error = 'Insufficient tokens';
-            await mg.save();
+            await mediaGroupRepo.updateMediaGroup(mg.id, { status: 'failed', error: 'Insufficient tokens' });
             await bot.telegram.sendMessage(
                 telegramId,
                 "You don't have enough tokens for media processing. Send /payments to top up."
@@ -1311,8 +1215,7 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
             return;
         }
 
-        mg.status = 'processing';
-        await mg.save();
+        await mediaGroupRepo.updateMediaGroup(mg.id, { status: 'processing' });
 
         const processingMsg = await bot.telegram.sendMessage(telegramId, 'Processing your media group...');
 
@@ -1345,9 +1248,7 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
                 fullPrompt
             );
 
-            mg.status = 'completed';
-            mg.result = claudeAnswer;
-            await mg.save();
+            await mediaGroupRepo.updateMediaGroup(mg.id, { status: 'completed', result: claudeAnswer });
 
             try {
                 await bot.telegram.deleteMessage(telegramId, processingMsg.message_id);
@@ -1368,9 +1269,7 @@ async function processMediaGroup(mediaGroupId: string, userId: string): Promise<
                 await userRepo.updateUser(userId, { tokens: refundUser.tokens + mg.tokenCost });
             }
 
-            mg.status = 'failed';
-            mg.error = (error as Error).message;
-            await mg.save();
+            await mediaGroupRepo.updateMediaGroup(mg.id, { status: 'failed', error: (error as Error).message });
 
             try {
                 await bot.telegram.deleteMessage(telegramId, processingMsg.message_id);
@@ -1392,54 +1291,21 @@ async function handleMediaGroupItem(ctx: any, mediaType: 'photo' | 'document'): 
     const userId = PREFIX + ctx.from!.id;
     const mediaGroupId = ctx.message.media_group_id as string;
 
-    let mediaGroup = await MediaGroup.findOne({ userId, mediaGroupId, status: 'collecting' });
-    const mg = mediaGroup as unknown as {
-        lastActivity: Date;
-        caption?: string;
-        mediaItems: Array<{ fileId: string; type: string; mimeType: string }>;
-        save(): Promise<void>;
-    } | null;
-
-    if (!mg) {
-        mediaGroup = new MediaGroup({
-            userId,
-            mediaGroupId,
-            status: 'collecting',
-            caption: ctx.message.caption || '',
-            mediaItems: [],
-            tokenCost: 2,
-            expiresAt: new Date(Date.now() + 60000),
-            lastActivity: new Date(),
-        });
-    } else {
-        mg.lastActivity = new Date();
-        if (ctx.message.caption && !mg.caption) mg.caption = ctx.message.caption as string;
-    }
-
-    const currentMg = mediaGroup as unknown as {
-        mediaItems: Array<{ fileId: string; type: string; mimeType: string }>;
-        save(): Promise<void>;
-    };
-
     const fileId =
         mediaType === 'photo'
             ? (ctx.message.photo as Array<{ file_id: string }>)[ctx.message.photo.length - 1].file_id
             : (ctx.message.document as { file_id: string }).file_id;
 
-    if (!currentMg.mediaItems.some((item) => item.fileId === fileId)) {
-        currentMg.mediaItems.push({
-            fileId,
-            type: mediaType,
-            mimeType:
-                mediaType === 'document'
-                    ? (ctx.message.document as { mime_type?: string }).mime_type || 'application/pdf'
-                    : 'image/jpeg',
-        });
-    }
+    const itemCount = await mediaGroupRepo.addMediaItem(userId, mediaGroupId, (ctx.message.caption as string) || '', {
+        fileId,
+        type: mediaType,
+        mimeType:
+            mediaType === 'document'
+                ? (ctx.message.document as { mime_type?: string }).mime_type || 'application/pdf'
+                : 'image/jpeg',
+    });
 
-    await currentMg.save();
-
-    if (currentMg.mediaItems.length === 1) {
+    if (itemCount === 1) {
         setTimeout(() => processMediaGroup(mediaGroupId, userId), 2000);
     }
 }
@@ -1467,7 +1333,6 @@ async function maybeHandlePrepUpload(
     caption: string,
     mediaType: 'photo' | 'document'
 ): Promise<boolean> {
-    await ensureConnection();
     let session = await prepService.getActiveSession(userId);
     const startsPrep = /^\/prep\b/i.test(caption.trim());
     if (!session && !startsPrep) return false;
@@ -1493,7 +1358,7 @@ async function maybeHandlePrepUpload(
         const n = parseQuestionCount(caption);
         if (n) {
             session.requestedCount = n;
-            await session.save();
+            await sessionRepo.saveSession(session);
         }
     }
 
@@ -1644,7 +1509,7 @@ async function startPrepQuiz(ctx: any, session: ISession, requested: number): Pr
     } catch (error) {
         console.error('Prep generation failed:', error);
         session.status = 'collecting';
-        await session.save();
+        await sessionRepo.saveSession(session);
         await ctx.reply(
             'Sorry, I had trouble generating questions from those files. Send a number to try again, or /exit to leave.'
         );

@@ -9,11 +9,12 @@ import * as paystackService from '../services/paystack.service.js';
 import * as prepService from '../services/prep.service.js';
 import * as documentService from '../services/document.service.js';
 import { sendAnalytics } from '../services/analytics.service.js';
-import { RequestState } from '../../models/requestState.js';
-import { PaymentState } from '../../models/paymentState.js';
-import VerificationState from '../../models/verificationState.js';
+import * as requestRepo from '../repositories/request.repository.js';
+import * as paymentRepo from '../repositories/payment.repository.js';
+import * as verificationRepo from '../repositories/verification.repository.js';
+import * as sessionRepo from '../repositories/session.repository.js';
 import { ensureConnection } from '../../db/connection.js';
-import type { ConversationMessage, ISession, IUser } from '../types/index.js';
+import type { ConversationMessage, ISession, IUser, IPaymentState } from '../types/index.js';
 
 const META_API_BASE = 'https://graph.facebook.com/v21.0';
 
@@ -289,13 +290,13 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
 
         userId = waId;
 
-        const existingRequest = await RequestState.findOne({ messageId });
+        const existingRequest = await requestRepo.findRequestByMessage(messageId);
         if (existingRequest) {
             res.status(200).send('OK');
             return;
         }
 
-        await RequestState.create({ userId, messageId, status: 'processing' });
+        await requestRepo.createRequest({ id: requestRepo.newRequestId(), userId, tokenCost: 1, messageId });
 
         let user = await userRepo.findUser(userId);
 
@@ -348,8 +349,7 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
             return;
         }
 
-        const paymentState = await PaymentState.findOne({ userId });
-        const ps = paymentState as unknown as { step: string; amount: number; tokens: number; email?: string; reference?: string; save(): Promise<void> } | null;
+        const ps = await paymentRepo.getPaymentState(userId);
 
         if (ps && ps.step === 'bundle_select' && !body.startsWith('/')) {
             const choice = parseInt(body.trim());
@@ -369,11 +369,11 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
 
             if (user.email) {
                 ps.step = 'processing';
-                await ps.save();
+                await paymentRepo.savePaymentState(ps);
                 await processWaPayment(userId, user.email, ps.amount, ps.tokens, waId, ps);
             } else {
                 ps.step = 'email';
-                await ps.save();
+                await paymentRepo.savePaymentState(ps);
                 await sendMsg(
                     'Please reply with your email address for payment receipt (we only need this once):',
                     waId
@@ -389,17 +389,17 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
                 await userRepo.updateUser(userId, { email });
                 ps.step = 'processing';
                 ps.email = email;
-                await ps.save();
+                await paymentRepo.savePaymentState(ps);
                 await processWaPayment(userId, email, ps.amount, ps.tokens, waId, ps);
                 res.status(200).send('OK');
                 return;
             } else {
-                await PaymentState.deleteOne({ userId });
+                await paymentRepo.deletePaymentState(userId);
             }
         }
 
         if (ps && body.startsWith('/')) {
-            await PaymentState.deleteOne({ userId });
+            await paymentRepo.deletePaymentState(userId);
         }
 
         if (numMedia > 0 && mediaId && mediaType) {
@@ -458,14 +458,14 @@ async function processWaPayment(
     amount: number,
     tokens: number,
     waId: string,
-    state: { reference?: string; save(): Promise<void> }
+    state: IPaymentState
 ): Promise<void> {
     const callbackUrl = `${config.webhookUrl}/api/wa/payment/callback`;
     const result = await paystackService.initializePayment(userId, email, amount, tokens, callbackUrl);
 
     if (result.success && result.reference) {
         state.reference = result.reference;
-        await state.save();
+        await paymentRepo.savePaymentState(state);
         await sendMsg(
             `Complete your payment of ₦${amount.toLocaleString()} for ${tokens} tokens:\n${result.authorizationUrl}\n\nYour tokens will be added automatically once your payment is confirmed.`,
             waId
@@ -509,11 +509,11 @@ async function handleWaCommand(
         }
 
         case '/payments': {
-            await PaymentState.findOneAndUpdate(
-                { userId },
-                { step: 'bundle_select', email: user!.email || null, createdAt: new Date() },
-                { upsert: true, new: true }
-            );
+            await paymentRepo.upsertPaymentState(userId, {
+                step: 'bundle_select',
+                email: user!.email || null,
+                createdAt: new Date(),
+            });
             const bundleList = paystackService.BUNDLES.map(
                 (b, i) => `${i + 1}. ₦${b.amount.toLocaleString()} – ${b.tokens} tokens`
             ).join('\n');
@@ -678,8 +678,8 @@ async function handleWaVerify(
         reference = parts.slice(1).join('').trim();
     }
 
-    const existingVerification = await VerificationState.findOne({ userId, reference, status: 'verified' });
-    if (existingVerification) {
+    const alreadyVerified = await verificationRepo.hasVerified(userId, reference);
+    if (alreadyVerified) {
         await sendMsg(
             `Already Verified\n\nThis payment reference has already been used.\nThe tokens were previously added to your account.\n\nCurrent balance: ${user.tokens} tokens`,
             waId
@@ -692,13 +692,7 @@ async function handleWaVerify(
     if (result.success) {
         const newTokens = user.tokens + (result.tokens ?? 0);
         await userRepo.updateUser(userId, { tokens: newTokens });
-        await VerificationState.create({
-            userId,
-            reference,
-            status: 'verified',
-            tokens: result.tokens,
-            verifiedAt: new Date(),
-        });
+        await verificationRepo.recordVerification(userId, reference, result.tokens ?? 0);
         await sendMsg(
             `Payment Verified!\n\nAdded: ${result.tokens} tokens\nNew balance: ${newTokens} tokens\n\nThank you for your payment!`,
             waId
@@ -742,12 +736,8 @@ async function handlePaystackWebhook(req: VercelRequest, res: VercelResponse): P
         }
 
         await userRepo.incrementTokens(tx.userId, tx.tokens);
-        await VerificationState.updateOne(
-            { userId: tx.userId, reference },
-            { $setOnInsert: { status: 'verified', tokens: tx.tokens, verifiedAt: new Date() } },
-            { upsert: true }
-        );
-        await PaymentState.deleteOne({ userId: tx.userId });
+        await verificationRepo.recordVerificationIfMissing(tx.userId, reference, tx.tokens);
+        await paymentRepo.deletePaymentState(tx.userId);
 
         if (tx.userId.startsWith('wa:')) {
             const updated = await userRepo.findUser(tx.userId);
@@ -899,7 +889,7 @@ async function handleWaPrep(
         const n = parseQuestionCount(body);
         if (n) {
             session.requestedCount = n;
-            await session.save();
+            await sessionRepo.saveSession(session);
         }
         if (!media) {
             await sendMsg(
@@ -994,7 +984,7 @@ async function startWaPrepQuiz(waId: string, session: ISession, requested: numbe
     } catch (error) {
         console.error('WA prep generation failed:', error);
         session.status = 'collecting';
-        await session.save();
+        await sessionRepo.saveSession(session);
         await sendMsg(
             'Sorry, I had trouble generating questions from those files. Send a number to try again, or /exit to leave.',
             waId

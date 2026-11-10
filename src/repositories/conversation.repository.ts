@@ -12,10 +12,7 @@ export async function getHistory(userId: string): Promise<ConversationMessage[]>
 
 export async function appendMessages(userId: string, messages: ConversationMessage[]): Promise<void> {
     await ensureConnection();
-    const user = await User.findOne({ userId }, 'convoHistory');
-    if (!user) return;
-    const updated = [...(user.convoHistory ?? []), ...messages];
-    await User.findOneAndUpdate({ userId }, { $set: { convoHistory: updated } });
+    await User.updateOne({ userId }, { $push: { convoHistory: { $each: messages } } });
 }
 
 export async function resetHistory(userId: string, saveAs?: string): Promise<void> {
