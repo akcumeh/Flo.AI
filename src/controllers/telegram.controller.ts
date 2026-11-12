@@ -17,6 +17,7 @@ import * as paymentRepo from '../repositories/payment.repository.js';
 import * as verificationRepo from '../repositories/verification.repository.js';
 import * as mediaGroupRepo from '../repositories/mediaGroup.repository.js';
 import * as sessionRepo from '../repositories/session.repository.js';
+import * as florenceApi from '../services/florenceApi.service.js';
 import { downloadTelegramFile } from '../../utils/getMsgContent.js';
 import type { IUser, ConversationMessage, ISession, IPaymentState } from '../types/index.js';
 
@@ -193,6 +194,22 @@ bot.on('inline_query', async (ctx) => {
 
 bot.command('start', async (ctx) => {
     try {
+        const payload = ctx.payload ?? '';
+        if (payload.startsWith('login_')) {
+            const code = florenceApi.parseLoginCode(payload.slice('login_'.length));
+            const result = code
+                ? await florenceApi.claimLoginCode({
+                      provider: 'telegram',
+                      code,
+                      providerUserId: String(ctx.from!.id),
+                      displayName: [ctx.from!.first_name, ctx.from!.last_name].filter(Boolean).join(' '),
+                      username: ctx.from!.username,
+                  })
+                : 'invalid';
+            await ctx.reply(florenceApi.claimReply(result));
+            return;
+        }
+
         const userId = PREFIX + ctx.from!.id;
 
         let user = await userRepo.findUser(userId);

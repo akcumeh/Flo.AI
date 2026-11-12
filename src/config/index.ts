@@ -29,5 +29,7 @@ export const config = {
         requireEnv('ADMIN_WA_ID_02'),
         requireEnv('ADMIN_WA_ID_03')
     ] as const,
+    florenceApiUrl: optionalEnv('FLORENCE_API_URL')?.replace(/\/+$/, '') ?? '',
+    florenceApiSecret: optionalEnv('FLORENCE_API_SECRET') ?? '',
     nodeEnv: optionalEnv('NODE_ENV') ?? 'development',
 } as const;

@@ -13,6 +13,7 @@ import * as requestRepo from '../repositories/request.repository.js';
 import * as paymentRepo from '../repositories/payment.repository.js';
 import * as verificationRepo from '../repositories/verification.repository.js';
 import * as sessionRepo from '../repositories/session.repository.js';
+import * as florenceApi from '../services/florenceApi.service.js';
 import { ensureConnection } from '../../db/connection.js';
 import type { ConversationMessage, ISession, IUser, IPaymentState } from '../types/index.js';
 
@@ -297,6 +298,19 @@ async function processMessage(req: VercelRequest, res: VercelResponse): Promise<
         }
 
         await requestRepo.createRequest({ id: requestRepo.newRequestId(), userId, tokenCost: 1, messageId });
+
+        const loginCode = message.type === 'text' ? florenceApi.parseLoginCode(body) : null;
+        if (loginCode) {
+            const result = await florenceApi.claimLoginCode({
+                provider: 'whatsapp',
+                code: loginCode,
+                providerUserId: phoneNumber,
+                displayName: profileName === 'User' ? undefined : profileName,
+            });
+            await sendMsg(florenceApi.claimReply(result), waId);
+            res.status(200).send('OK');
+            return;
+        }
 
         let user = await userRepo.findUser(userId);
 
