@@ -1,6 +1,5 @@
-import { Session } from '../../models/session.js';
-import { QuizResult } from '../../models/quizResult.js';
-import { ensureConnection } from '../../db/connection.js';
+import * as sessionRepo from '../repositories/session.repository.js';
+import * as quizRepo from '../repositories/quiz.repository.js';
 import * as userRepo from '../repositories/user.repository.js';
 import * as assistantService from './assistant.service.js';
 import type { ISession, ExamQuestion } from '../types/index.js';
@@ -17,8 +16,7 @@ function newExpiry(): Date {
 
 /** The user's current open session (any non-completed-and-closed state), or null. */
 export async function getActiveSession(userId: string): Promise<ISession | null> {
-    await ensureConnection();
-    return Session.findOne({ userId }) as unknown as Promise<ISession | null>;
+    return sessionRepo.findSessionByUser(userId);
 }
 
 /** Open a fresh session. Caller guarantees no active session exists. */
@@ -27,25 +25,18 @@ export async function start(
     platform: Platform,
     mode: 'prep' | 'create' = 'prep'
 ): Promise<ISession> {
-    await ensureConnection();
     // Defensive: clear any stale session for this user before opening a new one.
     const existing = await getActiveSession(userId);
     if (existing) await releaseFiles(existing);
-    await Session.deleteMany({ userId });
+    await sessionRepo.deleteSessionsForUser(userId);
 
-    return Session.create({
-        userId,
-        platform,
-        mode,
-        status: 'collecting',
-        expiresAt: newExpiry(),
-    }) as unknown as Promise<ISession>;
+    return sessionRepo.createSession({ userId, platform, mode, expiresAt: newExpiry() });
 }
 
 /** Refresh the inactivity expiry on session activity. */
 export async function touchSession(session: ISession): Promise<void> {
     session.expiresAt = newExpiry();
-    await session.save();
+    await sessionRepo.saveSession(session);
 }
 
 /** Upload a file to Anthropic and attach it to the session (capped at MAX_FILES). */
@@ -62,7 +53,7 @@ export async function addFile(
     const anthropicFileId = await assistantService.uploadPrepFile(buffer, fileName, mimeType);
     session.fileIds.push({ anthropicFileId, fileName: kind === 'image' ? null : fileName, kind });
     session.expiresAt = newExpiry();
-    await session.save();
+    await sessionRepo.saveSession(session);
     return { added: true, count: session.fileIds.length };
 }
 
@@ -78,7 +69,7 @@ export async function setCount(session: ISession, requested: number): Promise<nu
     session.requestedCount = effective;
     session.status = 'choosing';
     session.expiresAt = newExpiry();
-    await session.save();
+    await sessionRepo.saveSession(session);
     return effective;
 }
 
@@ -92,7 +83,7 @@ export async function generate(session: ISession): Promise<ExamQuestion[]> {
     session.currentIndex = 0;
     session.status = 'quizzing';
     session.expiresAt = newExpiry();
-    await session.save();
+    await sessionRepo.saveSession(session);
     return questions;
 }
 
@@ -160,7 +151,7 @@ export async function submitAnswer(session: ISession, userAnswer: string): Promi
     session.score += awardedMarks;
     session.currentIndex += 1;
     session.expiresAt = newExpiry();
-    await session.save();
+    await sessionRepo.saveSession(session);
 
     const done = session.currentIndex >= session.questions.length;
     return {
@@ -234,9 +225,9 @@ export async function complete(session: ISession): Promise<CompletionResult> {
     session.status = 'completed';
     const { cost, balanceAfter } = await finalizeCharge(session);
     await releaseFiles(session);
-    await session.save();
+    await sessionRepo.saveSession(session);
 
-    await QuizResult.create({
+    await quizRepo.createQuizResult({
         userId: session.userId,
         mode: session.mode,
         score: correctCount,
@@ -247,7 +238,7 @@ export async function complete(session: ISession): Promise<CompletionResult> {
 
     // Auto-close on completion: charge and files are settled, so there is no
     // dangling session to /exit. Early bail-out still goes through exit().
-    await Session.deleteOne({ _id: session._id });
+    await sessionRepo.deleteSession(session.id);
 
     return { correctCount, total, failedTopics, failedSources, cost, balanceAfter };
 }
@@ -263,7 +254,7 @@ export async function exit(session: ISession): Promise<ExitResult> {
     const wasCompleted = session.status === 'completed';
     const { cost, balanceAfter } = await finalizeCharge(session);
     await releaseFiles(session);
-    await session.save();
-    await Session.deleteOne({ _id: session._id });
+    await sessionRepo.saveSession(session);
+    await sessionRepo.deleteSession(session.id);
     return { cost, balanceAfter, wasCompleted };
 }

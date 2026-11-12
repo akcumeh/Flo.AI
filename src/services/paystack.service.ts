@@ -1,10 +1,14 @@
 import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
 import crypto from 'crypto';
 import { config } from '../config/index.js';
-import { createTransaction } from '../repositories/transaction.repository.js';
+import {
+    createTransaction,
+    findByReference,
+    hasExpired,
+    markFailed,
+    markSuccess,
+} from '../repositories/transaction.repository.js';
 import type { TokenBundle, PaymentResult, VerificationResult } from '../types/index.js';
-import { Transaction } from '../../models/transactions.js';
-import { ensureConnection } from '../../db/connection.js';
 
 const PAYSTACK_BASE_URL = 'https://api.paystack.co';
 
@@ -81,22 +85,19 @@ export async function initializePayment(
 
 export async function verifyTransaction(reference: string): Promise<VerificationResult> {
     try {
-        await ensureConnection();
-
         if (!reference) {
             return { success: false, message: 'Please provide a valid reference number.' };
         }
 
         const cleanReference = reference.replace(/[^a-zA-Z0-9-]/g, '');
-        const transaction = await Transaction.findOne({ reference: cleanReference });
+        const transaction = await findByReference(cleanReference);
 
         if (!transaction) {
             return { success: false, message: 'Transaction not found. Please check your reference number.' };
         }
 
-        if ((transaction as unknown as { hasExpired(): boolean }).hasExpired() && transaction.status === 'pending') {
-            transaction.status = 'failed';
-            await transaction.save();
+        if (hasExpired(transaction) && transaction.status === 'pending') {
+            await markFailed(cleanReference);
             return { success: false, message: 'This payment link has expired. Please initiate a new payment.' };
         }
 
@@ -126,10 +127,7 @@ export async function verifyTransaction(reference: string): Promise<Verification
         const responseData = response.data as Record<string, unknown>;
 
         if (response.status && responseData.status === 'success') {
-            transaction.status = 'success';
-            transaction.completedAt = new Date();
-            transaction.gatewayResponse = responseData;
-            await transaction.save();
+            await markSuccess(cleanReference, responseData);
 
             return {
                 success: true,

@@ -1,9 +1,8 @@
 import axios from 'axios';
 import { Telegraf } from 'telegraf';
-import { User } from '../../models/user.js';
-import { ensureConnection } from '../../db/connection.js';
 import { config } from '../config/index.js';
 import { findRecentSuccessful } from '../repositories/transaction.repository.js';
+import { countUsers, countUsersCreatedSince, findUserName } from '../repositories/user.repository.js';
 import type { AnalyticsData } from '../types/index.js';
 
 const bot = new Telegraf(config.botToken);
@@ -28,16 +27,14 @@ async function sendWaText(phoneNumber: string, text: string): Promise<void> {
 }
 
 export async function sendAnalytics(period: 'week' | 'month'): Promise<AnalyticsData> {
-    await ensureConnection();
-
     const now = new Date();
     const days = period === 'week' ? 7 : 30;
     const startDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const label = period === 'week' ? 'this week' : 'this month';
     const topCount = period === 'week' ? 3 : 5;
 
-    const totalUsers = await User.countDocuments({});
-    const newUsers = await User.countDocuments({ createdAt: { $gte: startDate } });
+    const totalUsers = await countUsers();
+    const newUsers = await countUsersCreatedSince(startDate);
     const transactions = await findRecentSuccessful(startDate);
 
     const totalRevenue = transactions.reduce((sum, tx) => sum + tx.amount, 0);
@@ -59,8 +56,8 @@ export async function sendAnalytics(period: 'week' | 'month'): Promise<Analytics
 
     const topSpendersWithNames = await Promise.all(
         topSpenders.map(async ([userId, data]) => {
-            const user = await User.findOne({ userId }, 'name').lean();
-            return { name: user ? (user as { name: string }).name : 'Unknown', ...data };
+            const name = await findUserName(userId);
+            return { name: name ?? 'Unknown', ...data };
         })
     );
 

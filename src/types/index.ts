@@ -1,5 +1,3 @@
-import type { Document } from 'mongoose';
-
 export type Platform = 'telegram' | 'whatsapp';
 
 export interface PlatformUser {
@@ -70,7 +68,7 @@ export interface StreakInfo {
 
 // Mongoose document interfaces
 
-export interface IUser extends Document {
+export interface IUser {
     userId: string;
     name: string;
     email?: string;
@@ -87,7 +85,7 @@ export interface IUser extends Document {
     updatedAt: Date;
 }
 
-export interface ITransaction extends Document {
+export interface ITransaction {
     userId: string;
     reference: string;
     amount: number;
@@ -99,10 +97,10 @@ export interface ITransaction extends Document {
     metadata?: object;
     createdAt: Date;
     expiresAt: Date;
-    hasExpired(): boolean;
 }
 
-export interface IRequestState extends Document {
+export interface IRequestState {
+    id: string;
     userId: string;
     messageId: string | number;
     status: 'processing' | 'completed' | 'cancelled' | 'failed';
@@ -119,7 +117,8 @@ export interface IRequestState extends Document {
     createdAt: Date;
 }
 
-export interface IPaymentState extends Document {
+export interface IPaymentState {
+    id: string;
     userId: string;
     step: 'init' | 'bundle_select' | 'email' | 'save_card' | 'processing' | 'completed' | 'cancelled';
     method: 'card' | 'bank' | null;
@@ -132,11 +131,19 @@ export interface IPaymentState extends Document {
     createdAt: Date;
 }
 
-export interface IMediaGroup extends Document {
+export interface MediaGroupItem {
+    fileId: string;
+    type: 'photo' | 'document';
+    mimeType: string;
+}
+
+export interface IMediaGroup {
+    id: string;
     userId: string;
+    mediaGroupId: string;
     status: 'collecting' | 'processing' | 'completed' | 'cancelled' | 'failed';
     caption: string;
-    mediaItems: Array<{ fileId: string; type: 'photo' | 'document' }>;
+    mediaItems: MediaGroupItem[];
     tokenCost: number;
     result?: string;
     error?: string;
@@ -145,7 +152,7 @@ export interface IMediaGroup extends Document {
     createdAt: Date;
 }
 
-export interface IVerificationState extends Document {
+export interface IVerificationState {
     userId: string;
     reference: string;
     status: 'verified' | 'failed';
@@ -181,7 +188,8 @@ export interface SessionFile {
     kind: 'image' | 'document'; // drives the Claude content-block shape on reference
 }
 
-export interface ISession extends Document {
+export interface ISession {
+    id: string;
     userId: string;
     platform: 'tg' | 'wa';
     mode: 'prep' | 'create'; // extensible: grader, research
@@ -200,7 +208,7 @@ export interface ISession extends Document {
     updatedAt: Date;
 }
 
-export interface IQuizResult extends Document {
+export interface IQuizResult {
     userId: string;
     mode: string;
     score: number;

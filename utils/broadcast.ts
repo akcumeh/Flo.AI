@@ -3,8 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Telegraf } from 'telegraf';
 import dotenv from 'dotenv';
-import { User } from '../models/user.js';
-import { ensureConnection } from '../db/connection.js';
+import { findUsersForBroadcast } from '../src/repositories/user.repository.js';
 
 dotenv.config();
 
@@ -147,15 +146,12 @@ async function broadCast(): Promise<void> {
     const payload: Payload = { text: message, filePath };
 
     try {
-        await ensureConnection();
-
         let users: BroadcastUser[];
 
         if (targetUserIds) {
             const telegramIds = targetUserIds.split(',').map((id) => id.trim());
-            const userIds = telegramIds.map((id) => `tg-${id}`);
 
-            users = (await User.find({ userId: { $in: userIds } }, 'userId name').lean()) as unknown as BroadcastUser[];
+            users = await findUsersForBroadcast(telegramIds);
             console.log(`Broadcasting to ${users.length} specific users...`);
 
             const foundUserIds = users.map((u) => u.userId.replace('tg-', ''));
@@ -164,7 +160,7 @@ async function broadCast(): Promise<void> {
                 console.log(`Users not found in DB: ${notFoundIds.join(', ')}`);
             }
         } else {
-            users = (await User.find({}, 'userId name').lean()) as unknown as BroadcastUser[];
+            users = await findUsersForBroadcast();
             console.log(`Broadcasting to all ${users.length} users...`);
         }
 
