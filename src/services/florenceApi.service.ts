@@ -18,7 +18,12 @@ export async function claimLoginCode(input: {
     displayName?: string;
     username?: string;
 }): Promise<ClaimResult> {
-    if (!config.florenceApiUrl || !config.florenceApiSecret) return 'unavailable';
+    if (!config.florenceApiUrl || !config.florenceApiSecret) {
+        console.error(
+            `Florence API claim skipped: FLORENCE_API_URL ${config.florenceApiUrl ? 'set' : 'missing'}, FLORENCE_API_SECRET ${config.florenceApiSecret ? 'set' : 'missing'}`
+        );
+        return 'unavailable';
+    }
     try {
         const res = await fetch(`${config.florenceApiUrl}/internal/v1/auth/challenges/claim`, {
             method: 'POST',
@@ -29,6 +34,10 @@ export async function claimLoginCode(input: {
         if (res.ok) return 'verified';
         if (res.status === 409) return 'already_used';
         if (res.status === 404 || res.status === 400) return 'invalid';
+        const body = (await res.text().catch(() => '')).slice(0, 300).replace(/\s+/g, ' ');
+        console.error(
+            `Florence API claim failed: ${res.status} from ${new URL(config.florenceApiUrl).host}, server ${res.headers.get('server') ?? '?'}, body ${body}`
+        );
         return 'unavailable';
     } catch (error) {
         console.error('Florence API claim failed:', error);
